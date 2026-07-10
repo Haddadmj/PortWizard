@@ -10,6 +10,10 @@ without dropping into the terminal.
 
 ## Features
 
+- **User apps only, by default** — Apple/system daemons (`ControlCenter`,
+  `rapportd`, `mDNSResponder`, …) are hidden so you see what *you* started:
+  nginx, node/Express, Postgres, Docker, and friends. Toggle the 👁 button (or
+  pass `--all` on the CLI) to reveal system processes.
 - **Listening ports at a glance** — everything currently accepting connections,
   with the owning app, PID, and bind address.
 - **Exposed vs. local** — a badge flags ports bound to all interfaces
@@ -44,7 +48,8 @@ open .build/PortWizard.app     # look for the 🌐 icon in the menu bar
 Or run headlessly to print the current listening ports to the terminal:
 
 ```bash
-swift run PortWizard --scan
+swift run PortWizard --scan        # user apps only
+swift run PortWizard --scan --all  # include macOS system processes
 ```
 
 ## Development

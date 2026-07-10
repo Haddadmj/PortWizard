@@ -28,7 +28,35 @@ enum PortScanner {
         // Field output tags: p(pid) c(command) L(login) f(fd) t(type)
         // P(protocol) n(name) T(TCP info incl. TST=state).
         let output = try run(arguments: ["-nP", "-i", "-FpcLftnPT"])
-        return parse(output)
+        var entries = parse(output)
+
+        // Enrich with executable paths in one batched `ps` call so system vs.
+        // user processes can be told apart (see PortEntry.isSystem).
+        let paths = executablePaths()
+        for i in entries.indices {
+            entries[i].executablePath = paths[entries[i].pid]
+        }
+        return entries
+    }
+
+    /// Build a pid → executable-path map for all running processes via one
+    /// `ps` invocation. `comm` on macOS reports the full executable path.
+    static func executablePaths() -> [Int32: String] {
+        guard let output = try? run(
+            executable: "/bin/ps",
+            arguments: ["-axww", "-o", "pid=", "-o", "comm="]
+        ) else { return [:] }
+
+        var map: [Int32: String] = [:]
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let trimmed = line.drop { $0 == " " }
+            guard let space = trimmed.firstIndex(of: " ") else { continue }
+            guard let pid = Int32(trimmed[..<space]) else { continue }
+            let path = trimmed[trimmed.index(after: space)...]
+                .trimmingCharacters(in: .whitespaces)
+            if !path.isEmpty { map[pid] = path }
+        }
+        return map
     }
 
     /// Parse `lsof -F` output into per-socket entries.
@@ -156,9 +184,12 @@ enum PortScanner {
     }
 
     /// Run a process and return its stdout as a UTF-8 string.
-    private static func run(arguments: [String]) throws -> String {
+    private static func run(
+        executable: String = "/usr/sbin/lsof",
+        arguments: [String]
+    ) throws -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
 
         let stdout = Pipe()

@@ -100,6 +100,39 @@ final class ParserTests: XCTestCase {
         XCTAssertNil(r?.remote)
     }
 
+    // MARK: - System vs. user classification
+
+    private func entry(command: String, user: String, path: String?) -> PortEntry {
+        PortEntry(pid: 1, command: command, user: user, netProtocol: .tcp,
+                  family: "IPv4", localHost: "*", port: 8080, remote: nil,
+                  state: "LISTEN", executablePath: path)
+    }
+
+    func testSystemPathIsClassifiedSystem() {
+        XCTAssertTrue(entry(command: "rapportd", user: "mohammad",
+                            path: "/usr/libexec/rapportd").isSystem)
+        XCTAssertTrue(entry(command: "ControlCenter", user: "mohammad",
+                            path: "/System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter").isSystem)
+    }
+
+    func testUserDevServerIsNotSystemEvenAsRoot() {
+        // nginx often runs as root but lives in Homebrew — still a user process.
+        XCTAssertFalse(entry(command: "nginx", user: "root",
+                             path: "/opt/homebrew/bin/nginx").isSystem)
+        XCTAssertFalse(entry(command: "node", user: "mohammad",
+                             path: "/usr/local/bin/node").isSystem)
+    }
+
+    func testUnknownPathFallsBackToUserThenName() {
+        // No path, owned by an `_` service account → system.
+        XCTAssertTrue(entry(command: "mDNSResponder", user: "_mdnsresponder",
+                            path: nil).isSystem)
+        // No path, known daemon name → system.
+        XCTAssertTrue(entry(command: "rapportd", user: "mohammad", path: nil).isSystem)
+        // No path, ordinary user, unknown name → treated as user.
+        XCTAssertFalse(entry(command: "my-server", user: "mohammad", path: nil).isSystem)
+    }
+
     func testNameParsingIPv4WithRemote() {
         let r = PortScanner.parseName("127.0.0.1:3000->127.0.0.1:60000")
         XCTAssertEqual(r?.host, "127.0.0.1")

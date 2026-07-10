@@ -44,13 +44,29 @@ final class PortsViewModel: ObservableObject {
 
     @Published var searchText = "" { didSet { rebuild() } }
     @Published var filter: PortFilter = .exposed { didSet { rebuild() } }
+    /// When false (default), macOS/Apple system processes are hidden so only
+    /// user-initiated apps (nginx, node, Docker, …) are listed.
+    @Published var showSystem = false { didSet { rebuild() } }
 
     /// All entries from the most recent scan, before filtering.
     private var allEntries: [PortEntry] = []
 
-    /// Number of exposed (listening) ports — used for the menu-bar badge.
+    /// Entries after applying the show-system toggle — the pool everything else
+    /// (counts, grouping, search) works from.
+    private var visibleEntries: [PortEntry] {
+        showSystem ? allEntries : allEntries.filter { !$0.isSystem }
+    }
+
+    /// Number of hidden system listening ports, for the "show system" hint.
+    var hiddenSystemCount: Int {
+        showSystem ? 0 : Set(allEntries.filter { $0.isSystem && $0.isListening }
+            .map { "\($0.port)/\($0.netProtocol.rawValue)" }).count
+    }
+
+    /// Number of exposed (listening) ports currently shown — the menu-bar badge.
     var listeningCount: Int {
-        Set(allEntries.filter(\.isListening).map { "\($0.port)/\($0.netProtocol.rawValue)" }).count
+        Set(visibleEntries.filter(\.isListening)
+            .map { "\($0.port)/\($0.netProtocol.rawValue)" }).count
     }
 
     func refresh() async {
@@ -80,7 +96,7 @@ final class PortsViewModel: ObservableObject {
             let listening: Bool
         }
         var groups: [Key: [PortEntry]] = [:]
-        for e in allEntries {
+        for e in visibleEntries {
             switch filter {
             case .exposed where !e.isListening: continue
             case .connections where e.isListening: continue

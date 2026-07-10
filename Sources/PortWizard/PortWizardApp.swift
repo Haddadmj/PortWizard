@@ -24,10 +24,15 @@ struct PortWizardApp: App {
 enum HeadlessScan {
     static func runAndExit() -> Never {
         do {
+            // Hide macOS/Apple system processes by default; pass --all to include them.
+            let includeSystem = CommandLine.arguments.contains("--all")
             let entries = try PortScanner.scan()
-            let listening = entries.filter(\.isListening)
+            let listening = entries
+                .filter { $0.isListening && (includeSystem || !$0.isSystem) }
                 .sorted { $0.port < $1.port }
-            print("Port Wizard — \(listening.count) listening socket(s)\n")
+            let hidden = includeSystem ? 0 : entries.filter { $0.isListening && $0.isSystem }.count
+            let suffix = hidden > 0 ? " (\(hidden) system hidden — pass --all to show)" : ""
+            print("Port Wizard — \(listening.count) listening socket(s)\(suffix)\n")
             print("PORT    PROTO  ADDRESS                APP (PID)")
             for e in listening {
                 let addr = "\(e.localHost):\(e.port)"

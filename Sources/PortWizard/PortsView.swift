@@ -25,6 +25,15 @@ struct PortsView: View {
                 Text("Port Wizard").font(.headline)
                 Spacer()
                 Button {
+                    model.showSystem.toggle()
+                } label: {
+                    Image(systemName: model.showSystem ? "eye" : "eye.slash")
+                }
+                .buttonStyle(.borderless)
+                .help(model.showSystem
+                      ? "Hide macOS system processes"
+                      : "Show macOS system processes")
+                Button {
                     Task { await model.refresh() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
@@ -89,6 +98,12 @@ struct PortsView: View {
                 .font(.largeTitle).foregroundStyle(.secondary)
             Text(model.isLoading ? "Scanning ports…" : "No matching ports")
                 .foregroundStyle(.secondary)
+            if !model.isLoading, model.hiddenSystemCount > 0 {
+                Button("Show \(model.hiddenSystemCount) system port(s)") {
+                    model.showSystem = true
+                }
+                .buttonStyle(.link)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -96,7 +111,9 @@ struct PortsView: View {
     private var footer: some View {
         HStack {
             if let updated = model.lastUpdated {
-                Text("\(model.rows.count) shown · \(model.listeningCount) listening")
+                Text(model.hiddenSystemCount > 0
+                     ? "\(model.rows.count) shown · \(model.hiddenSystemCount) system hidden"
+                     : "\(model.rows.count) shown · \(model.listeningCount) listening")
                     .font(.caption).foregroundStyle(.secondary)
                     .help("Updated \(updated.formatted(date: .omitted, time: .standard))")
             }
