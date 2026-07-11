@@ -118,12 +118,31 @@ struct PortsView: View {
                     .help("Updated \(updated.formatted(date: .omitted, time: .standard))")
             }
             Spacer()
+            intervalMenu
             Button("Quit", action: onQuit)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// Auto-refresh cadence picker, living in the footer.
+    private var intervalMenu: some View {
+        Menu {
+            Picker("Refresh every", selection: $model.refreshInterval) {
+                ForEach(RefreshInterval.allCases) { interval in
+                    Text(interval.menuLabel).tag(interval)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label(model.refreshInterval.shortLabel, systemImage: "timer")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("How often to re-scan ports")
     }
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Owns the menu-bar status item and the popover that hosts the SwiftUI UI.
@@ -10,7 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let model = PortsViewModel()
-    private var badgeTimer: Timer?
+    private var refreshTimer: Timer?
+    private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -30,12 +32,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rootView: PortsView(model: model) { NSApp.terminate(nil) }
         )
 
-        // Keep the menu-bar badge (listening-port count) fresh in the background.
+        // Initial scan, then keep the list + badge fresh on the chosen cadence.
         Task { await model.refresh(); updateBadge() }
-        badgeTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+
+        // Reschedule the auto-refresh timer whenever the user changes the
+        // interval in the popover footer.
+        model.$refreshInterval
+            .sink { [weak self] interval in self?.scheduleAutoRefresh(interval) }
+            .store(in: &cancellables)
+    }
+
+    /// (Re)install the background re-scan timer for the given interval, or tear
+    /// it down entirely when set to Manual.
+    private func scheduleAutoRefresh(_ interval: RefreshInterval) {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+        guard let seconds = interval.seconds else { return }
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if !self.popover.isShown { await self.model.refresh() }
+                await self.model.refresh()
                 self.updateBadge()
             }
         }

@@ -35,6 +35,36 @@ enum PortFilter: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// How often the port list re-scans in the background.
+enum RefreshInterval: Int, CaseIterable, Identifiable, Sendable {
+    case off = 0
+    case twoSeconds = 2
+    case fiveSeconds = 5
+    case tenSeconds = 10
+    case thirtySeconds = 30
+    case sixtySeconds = 60
+
+    var id: Int { rawValue }
+
+    /// Timer period, or nil when auto-refresh is off (manual only).
+    var seconds: TimeInterval? { self == .off ? nil : TimeInterval(rawValue) }
+
+    /// Compact label for the footer button.
+    var shortLabel: String { self == .off ? "Manual" : "\(rawValue)s" }
+
+    /// Descriptive label for the menu.
+    var menuLabel: String {
+        switch self {
+        case .off: return "Manual (off)"
+        case .twoSeconds: return "Every 2 seconds"
+        case .fiveSeconds: return "Every 5 seconds"
+        case .tenSeconds: return "Every 10 seconds"
+        case .thirtySeconds: return "Every 30 seconds"
+        case .sixtySeconds: return "Every minute"
+        }
+    }
+}
+
 @MainActor
 final class PortsViewModel: ObservableObject {
     @Published private(set) var rows: [PortRow] = []
@@ -47,6 +77,22 @@ final class PortsViewModel: ObservableObject {
     /// When false (default), macOS/Apple system processes are hidden so only
     /// user-initiated apps (nginx, node, Docker, …) are listed.
     @Published var showSystem = false { didSet { rebuild() } }
+
+    /// Background re-scan cadence. Persisted so it survives relaunches; the
+    /// AppDelegate observes this to (re)schedule its timer.
+    @Published var refreshInterval: RefreshInterval {
+        didSet {
+            UserDefaults.standard.set(refreshInterval.rawValue, forKey: Self.intervalKey)
+        }
+    }
+
+    private static let intervalKey = "refreshIntervalSeconds"
+
+    init() {
+        // Default to 5s — frequent enough to feel live without hammering lsof.
+        let stored = UserDefaults.standard.object(forKey: Self.intervalKey) as? Int
+        refreshInterval = stored.flatMap(RefreshInterval.init(rawValue:)) ?? .fiveSeconds
+    }
 
     /// All entries from the most recent scan, before filtering.
     private var allEntries: [PortEntry] = []
