@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = PortsViewModel()
     private var refreshTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
+    private var clickOutsideMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -26,11 +27,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
         }
 
-        popover.behavior = .transient
+        // We manage dismissal ourselves (see clickOutsideMonitor) rather than
+        // using .transient: toggling a live popover's behaviour to keep it open
+        // during a modal dialog breaks transient's click-outside monitor, so we
+        // own that logic instead and can suspend it while a dialog is showing.
+        popover.behavior = .applicationDefined
         popover.contentSize = NSSize(width: 420, height: 520)
         popover.contentViewController = NSHostingController(
             rootView: PortsView(model: model) { NSApp.terminate(nil) }
         )
+
+        // Close the popover on a click anywhere outside our app — unless a modal
+        // dialog (the kill confirmation) is currently up. Global monitors only
+        // fire for events delivered to *other* apps, so clicks inside the
+        // popover never reach here.
+        clickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.popover.isShown, !self.model.modalActive else { return }
+                self.popover.performClose(nil)
+            }
+        }
 
         // Initial scan, then keep the list + badge fresh on the chosen cadence.
         Task { await model.refresh(); updateBadge() }
@@ -39,14 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // interval in the popover footer.
         model.$refreshInterval
             .sink { [weak self] interval in self?.scheduleAutoRefresh(interval) }
-            .store(in: &cancellables)
-
-        // Hold the popover open while a modal dialog is showing, then restore
-        // transient (click-outside-to-close) behaviour.
-        model.$modalActive
-            .sink { [weak self] active in
-                self?.popover.behavior = active ? .applicationDefined : .transient
-            }
             .store(in: &cancellables)
     }
 
