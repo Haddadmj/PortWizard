@@ -151,6 +151,7 @@ private struct PortRowView: View {
     let row: PortRow
     var onChange: () -> Void
     @State private var hovering = false
+    @State private var copied = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -209,6 +210,14 @@ private struct PortRowView: View {
     private var actions: some View {
         HStack(spacing: 4) {
             Button {
+                copyToPasteboard("\(row.port)")
+            } label: {
+                Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
+            }
+                .foregroundStyle(copied ? .green : .primary)
+                .help("Copy port \(row.port)")
+
+            Button {
                 ProcessActions.revealInFinder(pid: row.pid)
             } label: { Image(systemName: "magnifyingglass.circle") }
                 .help("Reveal executable in Finder")
@@ -222,5 +231,13 @@ private struct PortRowView: View {
         }
         .buttonStyle(.borderless)
         .imageScale(.large)
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { copied = false }
     }
 }
