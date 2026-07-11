@@ -40,6 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.$refreshInterval
             .sink { [weak self] interval in self?.scheduleAutoRefresh(interval) }
             .store(in: &cancellables)
+
+        // Hold the popover open while a modal dialog is showing, then restore
+        // transient (click-outside-to-close) behaviour.
+        model.$modalActive
+            .sink { [weak self] active in
+                self?.popover.behavior = active ? .applicationDefined : .transient
+            }
+            .store(in: &cancellables)
     }
 
     /// (Re)install the background re-scan timer for the given interval, or tear

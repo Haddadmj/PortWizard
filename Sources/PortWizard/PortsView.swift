@@ -82,9 +82,9 @@ struct PortsView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(model.rows) { row in
-                        PortRowView(row: row) {
+                        PortRowView(row: row, onChange: {
                             Task { await model.refresh() }
-                        }
+                        }, setModal: { model.modalActive = $0 })
                         Divider()
                     }
                 }
@@ -160,6 +160,7 @@ struct PortsView: View {
 private struct PortRowView: View {
     let row: PortRow
     var onChange: () -> Void
+    var setModal: (Bool) -> Void
     @State private var hovering = false
     @State private var copied = false
     @State private var showKillConfirm = false
@@ -195,9 +196,7 @@ private struct PortRowView: View {
             }
             Spacer(minLength: 4)
 
-            if showKillConfirm {
-                killConfirmBar
-            } else if hovering {
+            if hovering {
                 actions
             } else {
                 statusBadge
@@ -208,26 +207,22 @@ private struct PortRowView: View {
         .contentShape(Rectangle())
         .background((hovering || showKillConfirm) ? Color.secondary.opacity(0.08) : .clear)
         .onHover { hovering = $0 }
-    }
-
-    /// Inline kill confirmation. Kept inside the popover (rather than a
-    /// confirmationDialog) because a sheet-style dialog steals key focus and
-    /// dismisses the transient menu-bar popover.
-    private var killConfirmBar: some View {
-        HStack(spacing: 6) {
-            Text("Release \(row.port)?")
-                .font(.caption).foregroundStyle(.secondary)
-            Button("Quit") { kill(SIGTERM); showKillConfirm = false }
-                .help("Send SIGTERM (graceful)")
-            Button("Force") { kill(SIGKILL); showKillConfirm = false }
-                .foregroundStyle(.red)
-                .help("Send SIGKILL (immediate)")
-            Button { showKillConfirm = false } label: { Image(systemName: "xmark") }
-                .foregroundStyle(.secondary)
-                .help("Cancel")
+        .confirmationDialog(
+            "Quit \(info.name) (PID \(row.pid))?",
+            isPresented: $showKillConfirm, titleVisibility: .visible
+        ) {
+            Button("Quit (SIGTERM)") { kill(SIGTERM) }
+            Button("Force Kill (SIGKILL)", role: .destructive) { kill(SIGKILL) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This releases port \(row.port). SIGTERM asks it to quit; "
+                + "Force Kill terminates it immediately.")
         }
-        .font(.caption)
-        .buttonStyle(.borderless)
+        // A confirmationDialog is a sheet that steals key focus; tell the app to
+        // hold the transient popover open while it's presented.
+        .onChange(of: showKillConfirm) { _, presented in
+            setModal(presented)
+        }
     }
 
     private var statusBadge: some View {

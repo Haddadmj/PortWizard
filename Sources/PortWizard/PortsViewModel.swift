@@ -86,6 +86,11 @@ final class PortsViewModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var lastUpdated: Date?
 
+    /// True while a modal (e.g. the kill confirmation dialog) is on screen. The
+    /// AppDelegate watches this to stop the transient popover auto-closing —
+    /// otherwise the dialog steals key focus and the popover dismisses with it.
+    @Published var modalActive = false
+
     @Published var searchText = "" { didSet { rebuild() } }
     @Published var filter: PortFilter = .exposed { didSet { rebuild() } }
     /// When false (default), macOS/Apple system processes are hidden so only
