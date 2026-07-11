@@ -25,6 +25,16 @@ struct PortsView: View {
                 Text("Port Wizard").font(.headline)
                 Spacer()
                 Button {
+                    model.notificationsEnabled.toggle()
+                } label: {
+                    Image(systemName: model.notificationsEnabled ? "bell.fill" : "bell.slash")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(model.notificationsEnabled ? Color.accentColor : .secondary)
+                .help(model.notificationsEnabled
+                      ? "Stop notifying about newly exposed ports"
+                      : "Notify when a process starts listening on a network-exposed port")
+                Button {
                     model.showSystem.toggle()
                 } label: {
                     Image(systemName: model.showSystem ? "eye" : "eye.slash")
@@ -152,6 +162,9 @@ private struct PortRowView: View {
     var onChange: () -> Void
     @State private var hovering = false
     @State private var copied = false
+    @State private var showKillConfirm = false
+
+    private var info: AppInfo.Info { AppInfo.lookup(pid: row.pid, fallbackCommand: row.command) }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -164,8 +177,15 @@ private struct PortRowView: View {
             }
             .frame(width: 56)
 
+            // App icon.
+            if let icon = info.icon {
+                Image(nsImage: icon)
+                    .resizable().aspectRatio(contentMode: .fit)
+                    .frame(width: 22, height: 22)
+            }
+
             VStack(alignment: .leading, spacing: 2) {
-                Text(row.command).font(.callout.weight(.medium)).lineLimit(1)
+                Text(info.name).font(.callout.weight(.medium)).lineLimit(1)
                 HStack(spacing: 6) {
                     Text("PID \(row.pid)")
                     Text("·")
@@ -209,31 +229,66 @@ private struct PortRowView: View {
 
     private var actions: some View {
         HStack(spacing: 4) {
-            Button {
-                copyToPasteboard("\(row.port)")
+            if row.isBrowsable {
+                Button {
+                    if let url = URL(string: "http://\(row.reachableHost):\(row.port)") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: { Image(systemName: "safari") }
+                    .help("Open http://\(row.reachableHost):\(row.port) in browser")
+            }
+
+            Menu {
+                Button("Copy port \(row.port)") { copy("\(row.port)") }
+                Button("Copy \(row.reachableHost):\(row.port)") {
+                    copy("\(row.reachableHost):\(row.port)")
+                }
+                Button("Copy URL") { copy("http://\(row.reachableHost):\(row.port)") }
+                Button("Copy PID \(row.pid)") { copy("\(row.pid)") }
+                if let path = row.executablePath {
+                    Button("Copy executable path") { copy(path) }
+                }
             } label: {
                 Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
+                    .foregroundStyle(copied ? .green : .primary)
             }
-                .foregroundStyle(copied ? .green : .primary)
-                .help("Copy port \(row.port)")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Copy…")
 
             Button {
                 ProcessActions.revealInFinder(pid: row.pid)
             } label: { Image(systemName: "magnifyingglass.circle") }
                 .help("Reveal executable in Finder")
 
-            Button {
-                ProcessActions.signal(pid: row.pid, sig: SIGTERM)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { onChange() }
+            Button(role: .destructive) {
+                showKillConfirm = true
             } label: { Image(systemName: "xmark.circle") }
-                .help("Quit process (SIGTERM)")
+                .help("Quit or force-kill process")
                 .foregroundStyle(.red)
+                .confirmationDialog(
+                    "Quit \(info.name) (PID \(row.pid))?",
+                    isPresented: $showKillConfirm, titleVisibility: .visible
+                ) {
+                    Button("Quit (SIGTERM)") { kill(SIGTERM) }
+                    Button("Force Kill (SIGKILL)", role: .destructive) { kill(SIGKILL) }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This releases port \(row.port). SIGTERM asks it to quit; "
+                        + "Force Kill terminates it immediately.")
+                }
         }
         .buttonStyle(.borderless)
         .imageScale(.large)
     }
 
-    private func copyToPasteboard(_ text: String) {
+    private func kill(_ sig: Int32) {
+        ProcessActions.signal(pid: row.pid, sig: sig)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { onChange() }
+    }
+
+    private func copy(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)

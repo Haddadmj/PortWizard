@@ -19,6 +19,20 @@ struct PortRow: Identifiable, Hashable {
     let hosts: [String]
     /// Number of connections collapsed here (established rows only).
     let connectionCount: Int
+    /// Absolute path to the owning executable, if resolved.
+    let executablePath: String?
+
+    /// A host suitable for building a URL — a concrete loopback/interface
+    /// address, mapping wildcard binds to `localhost`.
+    var reachableHost: String {
+        if let concrete = hosts.first(where: { $0 != "*" && $0 != "0.0.0.0" && $0 != "::" }) {
+            return concrete == "::1" ? "localhost" : concrete
+        }
+        return "localhost"
+    }
+
+    /// Only TCP listeners are plausibly openable in a browser.
+    var isBrowsable: Bool { isListening && netProtocol == .tcp }
 
     var protocolLabel: String { netProtocol.rawValue }
 
@@ -86,12 +100,28 @@ final class PortsViewModel: ObservableObject {
         }
     }
 
+    /// Notify when a process newly starts listening on a network-exposed port.
+    @Published var notificationsEnabled = false {
+        didSet {
+            UserDefaults.standard.set(notificationsEnabled, forKey: Self.notifyKey)
+            if notificationsEnabled {
+                notifier.requestAuthorization()
+            } else {
+                notifier.reset()
+            }
+        }
+    }
+
     private static let intervalKey = "refreshIntervalSeconds"
+    private static let notifyKey = "notificationsEnabled"
+    private let notifier = PortNotifier()
 
     init() {
         // Default to 5s — frequent enough to feel live without hammering lsof.
         let stored = UserDefaults.standard.object(forKey: Self.intervalKey) as? Int
         refreshInterval = stored.flatMap(RefreshInterval.init(rawValue:)) ?? .fiveSeconds
+        notificationsEnabled = UserDefaults.standard.bool(forKey: Self.notifyKey)
+        if notificationsEnabled { notifier.requestAuthorization() }
     }
 
     /// All entries from the most recent scan, before filtering.
@@ -125,6 +155,8 @@ final class PortsViewModel: ObservableObject {
             allEntries = entries
             lastError = nil
             lastUpdated = Date()
+            AppInfo.prune(livePIDs: Set(entries.map(\.pid)))
+            notifier.handle(entries: entries)
         } catch {
             lastError = error.localizedDescription
         }
@@ -167,7 +199,8 @@ final class PortsViewModel: ObservableObject {
                 isListening: key.listening,
                 isPublicBind: anyPublic,
                 hosts: hosts,
-                connectionCount: max(established.count, 1)
+                connectionCount: max(established.count, 1),
+                executablePath: members.first?.executablePath
             )
         }
 

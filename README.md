@@ -18,11 +18,22 @@ without dropping into the terminal.
   with the owning app, PID, and bind address.
 - **Exposed vs. local** — a badge flags ports bound to all interfaces
   (🌐 reachable from the network) versus localhost-only (🔒).
+- **Real app names & icons** — GUI apps show their Launch Services name and icon
+  (Visual Studio Code, Docker, Chrome); CLI tools and daemons fall back to the
+  process name with a terminal glyph.
 - **Active connections** — switch to the *Connections* tab to see established
   sockets and their remote endpoints.
 - **Search** — filter instantly by app name, port number, or address.
-- **Quick actions** — reveal a process's executable in Finder, or quit it
-  (SIGTERM) right from the row.
+- **Quick actions** on hover:
+  - **Open in browser** — one click to `http://localhost:PORT` for TCP listeners.
+  - **Copy…** — port, `host:port`, full URL, PID, or executable path.
+  - **Reveal** the executable in Finder.
+  - **Quit / Force-Kill** — with a confirmation offering SIGTERM or SIGKILL.
+- **Configurable refresh** — pick a background re-scan cadence (Manual / 2s / 5s
+  / 10s / 30s / 1m) from the footer; the choice is remembered.
+- **Exposed-port notifications** — optionally get notified the moment a process
+  starts listening on a network-reachable port (a dev server coming up, or an
+  unexpected port opening — a handy security signal). Toggle the 🔔 in the header.
 - **Menu-bar badge** — shows a live count of listening ports, refreshed in the
   background.
 - **No dependencies, no privileges** — reads sockets via the system `lsof`.
