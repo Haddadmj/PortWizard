@@ -195,7 +195,9 @@ private struct PortRowView: View {
             }
             Spacer(minLength: 4)
 
-            if hovering {
+            if showKillConfirm {
+                killConfirmBar
+            } else if hovering {
                 actions
             } else {
                 statusBadge
@@ -204,8 +206,28 @@ private struct PortRowView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
-        .background(hovering ? Color.secondary.opacity(0.08) : .clear)
+        .background((hovering || showKillConfirm) ? Color.secondary.opacity(0.08) : .clear)
         .onHover { hovering = $0 }
+    }
+
+    /// Inline kill confirmation. Kept inside the popover (rather than a
+    /// confirmationDialog) because a sheet-style dialog steals key focus and
+    /// dismisses the transient menu-bar popover.
+    private var killConfirmBar: some View {
+        HStack(spacing: 6) {
+            Text("Release \(row.port)?")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("Quit") { kill(SIGTERM); showKillConfirm = false }
+                .help("Send SIGTERM (graceful)")
+            Button("Force") { kill(SIGKILL); showKillConfirm = false }
+                .foregroundStyle(.red)
+                .help("Send SIGKILL (immediate)")
+            Button { showKillConfirm = false } label: { Image(systemName: "xmark") }
+                .foregroundStyle(.secondary)
+                .help("Cancel")
+        }
+        .font(.caption)
+        .buttonStyle(.borderless)
     }
 
     private var statusBadge: some View {
@@ -267,17 +289,6 @@ private struct PortRowView: View {
             } label: { Image(systemName: "xmark.circle") }
                 .help("Quit or force-kill process")
                 .foregroundStyle(.red)
-                .confirmationDialog(
-                    "Quit \(info.name) (PID \(row.pid))?",
-                    isPresented: $showKillConfirm, titleVisibility: .visible
-                ) {
-                    Button("Quit (SIGTERM)") { kill(SIGTERM) }
-                    Button("Force Kill (SIGKILL)", role: .destructive) { kill(SIGKILL) }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("This releases port \(row.port). SIGTERM asks it to quit; "
-                        + "Force Kill terminates it immediately.")
-                }
         }
         .buttonStyle(.borderless)
         .imageScale(.large)
