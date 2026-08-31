@@ -53,7 +53,7 @@ Requires macOS 14+ and a Swift 6 toolchain (Xcode 16).
 ```bash
 # Build a runnable .app bundle (ends up in .build/PortWizard.app)
 ./scripts/build-app.sh release
-open .build/PortWizard.app     # look for the 🌐 icon in the menu bar
+open .build/PortWizard.app     # look for the wand-and-globe icon in the menu bar
 ```
 
 Or run headlessly to print the current listening ports to the terminal:
@@ -68,6 +68,21 @@ swift run PortWizard --scan --all  # include macOS system processes
 ```bash
 swift build      # compile
 swift test       # run the lsof parser unit tests
+```
+
+### The icon
+
+The mark is a `network` glyph with a wand badged into its lower-right corner,
+composed from two SF Symbols because there is no combined one. It exists twice:
+`Sources/PortWizard/StatusIcon.swift` draws the flat template image the menu bar
+tints, and `scripts/make-appicon.swift` draws the colour version and writes
+`Resources/AppIcon.icns`.
+
+The `.icns` is committed, so a normal build needs neither Xcode nor this script.
+Re-run it only when changing the mark:
+
+```bash
+swift scripts/make-appicon.swift
 ```
 
 The parser is pure and fully unit-tested against captured `lsof -F` fixtures

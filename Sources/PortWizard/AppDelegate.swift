@@ -18,10 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "network",
-                accessibilityDescription: "Port Wizard"
-            )
+            button.image = StatusIcon.menuBar()
             button.imagePosition = .imageLeading
             button.action = #selector(togglePopover(_:))
             button.target = self
