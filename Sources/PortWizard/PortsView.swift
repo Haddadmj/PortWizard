@@ -27,16 +27,7 @@ struct PortsView: View {
                     .foregroundStyle(.tint)
                 Text("Port Wizard").font(.headline)
                 Spacer()
-                Button {
-                    model.notificationsEnabled.toggle()
-                } label: {
-                    Image(systemName: model.notificationsEnabled ? "bell.fill" : "bell.slash")
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(model.notificationsEnabled ? Color.accentColor : .secondary)
-                .help(model.notificationsEnabled
-                      ? "Stop notifying about newly exposed ports"
-                      : "Notify when a process starts listening on a network-exposed port")
+                notificationMenu
                 Button {
                     model.showSystem.toggle()
                 } label: {
@@ -75,6 +66,36 @@ struct PortsView: View {
         .padding(12)
     }
 
+    /// Notification settings: the master switch, the system-services escape
+    /// hatch, and the list of hand-muted processes so a mute can be undone
+    /// without hunting for the row that set it.
+    private var notificationMenu: some View {
+        Menu {
+            Toggle("Notify about newly exposed ports", isOn: $model.notificationsEnabled)
+            Toggle("Include macOS system services", isOn: $model.notifySystemServices)
+                .disabled(!model.notificationsEnabled)
+
+            if !model.mutedCommands.isEmpty {
+                Divider()
+                Section("Muted") {
+                    ForEach(model.mutedCommands.sorted(), id: \.self) { command in
+                        Button("Unmute \(command)") { model.toggleMute(command) }
+                    }
+                    if model.mutedCommands.count > 1 {
+                        Button("Unmute All") { model.unmuteAll() }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: model.notificationsEnabled ? "bell.fill" : "bell.slash")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .foregroundStyle(model.notificationsEnabled ? Color.accentColor : .secondary)
+        .help("Notification settings")
+    }
+
     @ViewBuilder
     private var content: some View {
         if let error = model.lastError {
@@ -85,9 +106,13 @@ struct PortsView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(model.rows) { row in
-                        PortRowView(row: row, onChange: {
-                            Task { await model.refresh() }
-                        }, setModal: { model.modalActive = $0 })
+                        PortRowView(
+                            row: row,
+                            isMuted: model.isMuted(row.command),
+                            onChange: { Task { await model.refresh() } },
+                            setModal: { model.modalActive = $0 },
+                            toggleMute: { model.toggleMute(row.command) }
+                        )
                         Divider()
                     }
                 }
@@ -171,8 +196,11 @@ struct PortsView: View {
 /// A single port row with expandable action buttons.
 private struct PortRowView: View {
     let row: PortRow
+    /// Whether this row's command is muted from exposed-port notifications.
+    let isMuted: Bool
     var onChange: () -> Void
     var setModal: (Bool) -> Void
+    var toggleMute: () -> Void
     @State private var hovering = false
     @State private var copied = false
     @State private var showKillConfirm = false
@@ -203,6 +231,10 @@ private struct PortRowView: View {
                     Text("PID \(row.pid)")
                     Text("·")
                     Text(row.hostSummary).lineLimit(1)
+                    if isMuted {
+                        Image(systemName: "bell.slash")
+                            .help("Muted — this process won't raise port notifications")
+                    }
                 }
                 .font(.caption).foregroundStyle(.secondary)
             }
@@ -276,6 +308,12 @@ private struct PortRowView: View {
                 Button("Copy PID \(row.pid)") { copy("\(row.pid)") }
                 if let path = row.executablePath {
                     Button("Copy executable path") { copy(path) }
+                }
+                Divider()
+                Button(isMuted
+                       ? "Unmute notifications for \(row.command)"
+                       : "Mute notifications for \(row.command)") {
+                    toggleMute()
                 }
             } label: {
                 Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
