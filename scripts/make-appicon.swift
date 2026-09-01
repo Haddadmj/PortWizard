@@ -1,13 +1,15 @@
-#!/usr/bin/env swift
 // Generates Resources/AppIcon.icns — the network glyph with a wand badged into
 // its lower-right corner, on a macOS-style rounded-rect ground.
 //
 // This mirrors the arrangement in Sources/PortWizard/StatusIcon.swift so the
-// Finder icon and the menu-bar mark read as the same thing. It is kept separate
-// rather than shared because the menu-bar mark is a flat template image (the
-// menu bar supplies the colour) while this one has to carry its own.
+// Finder icon and the menu-bar mark read as the same thing. The drawing is kept
+// separate because the menu-bar mark is a flat template image (the menu bar
+// supplies the colour) while this one has to carry its own; the geometry and
+// symbol lookup underneath both is shared, via SymbolDrawing.swift.
 //
-// Usage: swift scripts/make-appicon.swift
+// That shared file is why this is compiled rather than interpreted. Run it with
+// ./scripts/make-appicon.sh, not `swift scripts/make-appicon.swift`.
+//
 // Run it after changing the mark; the .icns is committed so a plain build
 // doesn't need Xcode or a designer in the loop.
 
@@ -19,25 +21,6 @@ import AppKit
 /// middle ~80%, and the rest is the breathing room the Dock expects.
 let contentRatio: CGFloat = 824.0 / 1024.0
 let cornerRatio: CGFloat = 185.0 / 824.0
-
-func aspectFit(_ size: NSSize, in box: NSRect) -> NSRect {
-    guard size.width > 0, size.height > 0 else { return box }
-    let scale = min(box.width / size.width, box.height / size.height)
-    let fitted = NSSize(width: size.width * scale, height: size.height * scale)
-    return NSRect(
-        x: box.midX - fitted.width / 2,
-        y: box.midY - fitted.height / 2,
-        width: fitted.width,
-        height: fitted.height
-    )
-}
-
-func symbol(_ name: String, pointSize: CGFloat, weight: NSFont.Weight) -> NSImage? {
-    NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-        .withSymbolConfiguration(
-            NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
-        )
-}
 
 /// Recolour a template symbol inside its own transparent layer.
 ///
@@ -54,11 +37,18 @@ func tinted(_ image: NSImage, _ color: NSColor) -> NSImage {
     }
 }
 
-func wand(pointSize: CGFloat, weight: NSFont.Weight) -> NSImage? {
-    for name in ["wand.and.stars", "wand.and.sparkles", "wand.and.rays", "sparkles"] {
-        if let image = symbol(name, pointSize: pointSize, weight: weight) { return image }
+/// Look up a symbol, or bail out naming it.
+///
+/// A missing glyph here would bake a wrong mark into a committed binary asset,
+/// so this fails the run rather than substituting something else.
+func requireSymbol(_ name: String, pointSize: CGFloat, weight: NSFont.Weight) -> NSImage {
+    guard let image = SymbolDrawing.symbol(name, pointSize: pointSize, weight: weight) else {
+        FileHandle.standardError.write(
+            Data("error: SF Symbol '\(name)' is unavailable on this system\n".utf8)
+        )
+        exit(1)
     }
-    return nil
+    return image
 }
 
 // MARK: - Drawing
@@ -69,30 +59,26 @@ func wand(pointSize: CGFloat, weight: NSFont.Weight) -> NSImage? {
 /// punched straight through to the gradient, exactly as the menu-bar mark
 /// punches through to the menu bar behind it.
 func markLayer(side: CGFloat, weight: NSFont.Weight) -> NSImage {
-    NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-        guard let context = NSGraphicsContext.current,
-              let globe = symbol("network", pointSize: side * 0.62, weight: weight),
-              let stick = wand(pointSize: side * 0.40, weight: weight)
-        else { return false }
+    let globe = requireSymbol(SymbolDrawing.globeName, pointSize: side * 0.62, weight: weight)
+    let stick = requireSymbol(SymbolDrawing.wandName, pointSize: side * 0.40, weight: weight)
+
+    return NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+        guard let context = NSGraphicsContext.current else { return false }
 
         let globeBox = NSRect(
             x: rect.width * 0.06, y: rect.height * 0.16,
             width: rect.width * 0.70, height: rect.height * 0.70
         )
-        let globeRect = aspectFit(globe.size, in: globeBox)
-        tinted(globe, .white).draw(in: globeRect)
+        tinted(globe, .white).draw(in: SymbolDrawing.aspectFit(globe.size, in: globeBox))
 
         let wandBox = NSRect(
             x: rect.width * 0.50, y: rect.height * 0.04,
             width: rect.width * 0.44, height: rect.height * 0.44
         )
-        let wandRect = aspectFit(stick.size, in: wandBox)
+        let wandRect = SymbolDrawing.aspectFit(stick.size, in: wandBox)
 
-        context.compositingOperation = .destinationOut
-        NSColor.black.setFill()
-        NSBezierPath(ovalIn: wandRect.insetBy(dx: -side * 0.035, dy: -side * 0.035)).fill()
+        SymbolDrawing.knockOutDisc(around: wandRect, outset: side * 0.035, in: context)
 
-        context.compositingOperation = .sourceOver
         let gold = NSColor(srgbRed: 1.0, green: 0.82, blue: 0.35, alpha: 1)
         tinted(stick, gold).draw(in: wandRect)
         return true
@@ -145,31 +131,38 @@ func png(_ image: NSImage, pixels: Int) -> Data {
     return rep.representation(using: .png, properties: [:])!
 }
 
-let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-let iconset = root.appendingPathComponent(".build/AppIcon.iconset")
-try? FileManager.default.removeItem(at: iconset)
-try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
+@main
+enum MakeAppIcon {
+    static func main() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let iconset = root.appendingPathComponent(".build/AppIcon.iconset")
+        try? FileManager.default.removeItem(at: iconset)
+        try FileManager.default.createDirectory(
+            at: iconset, withIntermediateDirectories: true
+        )
 
-// Each size is redrawn rather than resampled from 1024, so the strokes stay
-// crisp at 16pt instead of turning to grey mush.
-for point in [16, 32, 128, 256, 512] {
-    for scale in [1, 2] {
-        let pixels = point * scale
-        let suffix = scale == 1 ? "" : "@2x"
-        let name = "icon_\(point)x\(point)\(suffix).png"
-        let data = png(appIcon(pixels: CGFloat(pixels)), pixels: pixels)
-        try data.write(to: iconset.appendingPathComponent(name))
+        // Each size is redrawn rather than resampled from 1024, so the strokes
+        // stay crisp at 16pt instead of turning to grey mush.
+        for point in [16, 32, 128, 256, 512] {
+            for scale in [1, 2] {
+                let pixels = point * scale
+                let suffix = scale == 1 ? "" : "@2x"
+                let name = "icon_\(point)x\(point)\(suffix).png"
+                let data = png(appIcon(pixels: CGFloat(pixels)), pixels: pixels)
+                try data.write(to: iconset.appendingPathComponent(name))
+            }
+        }
+
+        let icns = root.appendingPathComponent("Resources/AppIcon.icns")
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+        task.arguments = ["-c", "icns", iconset.path, "-o", icns.path]
+        try task.run()
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else {
+            FileHandle.standardError.write(Data("error: iconutil failed\n".utf8))
+            exit(1)
+        }
+        print("wrote \(icns.path)")
     }
 }
-
-let icns = root.appendingPathComponent("Resources/AppIcon.icns")
-let task = Process()
-task.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
-task.arguments = ["-c", "icns", iconset.path, "-o", icns.path]
-try task.run()
-task.waitUntilExit()
-guard task.terminationStatus == 0 else {
-    FileHandle.standardError.write(Data("iconutil failed\n".utf8))
-    exit(1)
-}
-print("wrote \(icns.path)")

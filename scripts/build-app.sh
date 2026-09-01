@@ -19,9 +19,15 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$ROOT/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
-if [ -f "$ROOT/Resources/AppIcon.icns" ]; then
-  cp "$ROOT/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+# The bundle is not shippable without its icon, and a missing one used to be
+# silent — a successful build producing a blank-page icon in Finder.
+ICON="$ROOT/Resources/AppIcon.icns"
+if [ ! -f "$ICON" ]; then
+  echo "error: missing $ICON" >&2
+  echo "       regenerate it with ./scripts/make-appicon.sh" >&2
+  exit 1
 fi
+cp "$ICON" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc sign so the app can run locally without Gatekeeper complaints.
 codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true

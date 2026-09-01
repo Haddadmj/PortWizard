@@ -70,25 +70,26 @@ swift build      # compile
 swift test       # run the lsof parser unit tests
 ```
 
+The parser is pure and fully unit-tested against captured `lsof -F` fixtures
+(`Tests/PortWizardTests/ParserTests.swift`), so the tricky address-parsing logic
+(IPv4, bracketed IPv6, `host:port->remote`, wildcard UDP) is verified without
+needing live sockets.
+
 ### The icon
 
 The mark is a `network` glyph with a wand badged into its lower-right corner,
-composed from two SF Symbols because there is no combined one. It exists twice:
-`Sources/PortWizard/StatusIcon.swift` draws the flat template image the menu bar
-tints, and `scripts/make-appicon.swift` draws the colour version and writes
-`Resources/AppIcon.icns`.
+composed from two SF Symbols because there is no combined one. It is drawn
+twice: `Sources/PortWizard/StatusIcon.swift` builds the flat template image the
+menu bar tints, and `scripts/make-appicon.swift` builds the colour version and
+writes `Resources/AppIcon.icns`. The geometry both share lives in
+`Sources/PortWizard/SymbolDrawing.swift`.
 
 The `.icns` is committed, so a normal build needs neither Xcode nor this script.
 Re-run it only when changing the mark:
 
 ```bash
-swift scripts/make-appicon.swift
+./scripts/make-appicon.sh
 ```
-
-The parser is pure and fully unit-tested against captured `lsof -F` fixtures
-(`Tests/PortWizardTests/ParserTests.swift`), so the tricky address-parsing logic
-(IPv4, bracketed IPv6, `host:port->remote`, wildcard UDP) is verified without
-needing live sockets.
 
 ## License
 
