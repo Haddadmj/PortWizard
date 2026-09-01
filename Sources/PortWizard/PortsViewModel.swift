@@ -175,6 +175,12 @@ final class PortsViewModel: ObservableObject {
         }
     }
 
+    /// Clear the whole mute list.
+    func unmuteAll() {
+        guard !mutedCommands.isEmpty else { return }
+        mutedCommands.removeAll()
+    }
+
     /// All entries from the most recent scan, before filtering.
     private var allEntries: [PortEntry] = []
 

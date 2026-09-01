@@ -81,6 +81,9 @@ struct PortsView: View {
                     ForEach(model.mutedCommands.sorted(), id: \.self) { command in
                         Button("Unmute \(command)") { model.toggleMute(command) }
                     }
+                    if model.mutedCommands.count > 1 {
+                        Button("Unmute All") { model.unmuteAll() }
+                    }
                 }
             }
         } label: {
