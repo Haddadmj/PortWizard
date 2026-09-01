@@ -19,6 +19,12 @@ enum StatusIcon {
     /// down for us, and scaling a two-part mark is what turns the badge to mush.
     private static let canvas = NSSize(width: 18, height: 18)
 
+    /// The mark, built once.
+    ///
+    /// Shared by the status item and the popover's header so the two can't
+    /// drift into showing different marks for the same app.
+    @MainActor static let shared: NSImage = menuBar()
+
     /// The menu-bar status item image.
     ///
     /// If the badged mark can't be composed the plain globe is used instead. It

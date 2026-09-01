@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = StatusIcon.menuBar()
+            button.image = StatusIcon.shared
             button.imagePosition = .imageLeading
             button.action = #selector(togglePopover(_:))
             button.target = self

@@ -20,7 +20,10 @@ struct PortsView: View {
     private var header: some View {
         VStack(spacing: 8) {
             HStack {
-                Image(systemName: "network")
+                // The same mark the menu bar shows, so the panel that opens
+                // is recognisably the thing that was clicked.
+                Image(nsImage: StatusIcon.shared)
+                    .renderingMode(.template)
                     .foregroundStyle(.tint)
                 Text("Port Wizard").font(.headline)
                 Spacer()
