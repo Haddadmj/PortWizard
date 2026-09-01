@@ -117,16 +117,62 @@ final class PortsViewModel: ObservableObject {
         }
     }
 
+    /// Whether macOS/Apple daemons are allowed to notify. Off by default —
+    /// Continuity services rebind ephemeral wildcard ports constantly, so every
+    /// rebind reads as a newly exposed port.
+    @Published var notifySystemServices = false {
+        didSet {
+            UserDefaults.standard.set(notifySystemServices, forKey: Self.notifySystemKey)
+            notifier.includeSystem = notifySystemServices
+            notifier.reset()
+        }
+    }
+
+    /// Command names muted from notifications by hand — the escape hatch for
+    /// chatty processes that aren't Apple daemons and so aren't covered by
+    /// `notifySystemServices`.
+    @Published private(set) var mutedCommands: Set<String> = [] {
+        didSet {
+            UserDefaults.standard.set(mutedCommands.sorted(), forKey: Self.mutedKey)
+            notifier.mutedCommands = mutedCommands
+            notifier.reset()
+        }
+    }
+
     private static let intervalKey = "refreshIntervalSeconds"
     private static let notifyKey = "notificationsEnabled"
+    private static let notifySystemKey = "notifySystemServices"
+    private static let mutedKey = "mutedCommands"
     private let notifier = PortNotifier()
 
     init() {
         // Default to 5s — frequent enough to feel live without hammering lsof.
         let stored = UserDefaults.standard.object(forKey: Self.intervalKey) as? Int
         refreshInterval = stored.flatMap(RefreshInterval.init(rawValue:)) ?? .fiveSeconds
+
+        // didSet does not run for these during init, so the notifier is synced
+        // by hand rather than relying on the property observers.
+        notifySystemServices = UserDefaults.standard.bool(forKey: Self.notifySystemKey)
+        mutedCommands = Set(
+            UserDefaults.standard.stringArray(forKey: Self.mutedKey) ?? []
+        )
+        notifier.includeSystem = notifySystemServices
+        notifier.mutedCommands = mutedCommands
+
         notificationsEnabled = UserDefaults.standard.bool(forKey: Self.notifyKey)
         if notificationsEnabled { notifier.requestAuthorization() }
+    }
+
+    /// Whether `command` is currently muted from notifications.
+    func isMuted(_ command: String) -> Bool { mutedCommands.contains(command) }
+
+    /// Mute or unmute every port owned by `command`.
+    func toggleMute(_ command: String) {
+        if mutedCommands.contains(command) {
+            mutedCommands.remove(command)
+        } else {
+            mutedCommands.insert(command)
+        }
     }
 
     /// All entries from the most recent scan, before filtering.
