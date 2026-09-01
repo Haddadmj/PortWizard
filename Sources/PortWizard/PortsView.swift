@@ -14,7 +14,7 @@ struct PortsView: View {
             footer
         }
         .frame(width: 420, height: 520)
-        .task { await model.refresh() }
+        .task { await model.refresh(userInitiated: true) }
     }
 
     private var header: some View {
@@ -47,7 +47,7 @@ struct PortsView: View {
                       ? "Hide macOS system processes"
                       : "Show macOS system processes")
                 Button {
-                    Task { await model.refresh() }
+                    Task { await model.refresh(userInitiated: true) }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -123,10 +123,19 @@ struct PortsView: View {
 
     private var footer: some View {
         HStack {
-            if let updated = model.lastUpdated {
+            // The scan time used to live only in a tooltip, so a re-scan that
+            // found the same ports — the common case — left the panel looking
+            // untouched. It is on the face of the footer now.
+            if model.isLoading {
+                HStack(spacing: 5) {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning…")
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            } else if let updated = model.lastUpdated {
                 Text(model.hiddenSystemCount > 0
-                     ? "\(model.rows.count) shown · \(model.hiddenSystemCount) system hidden"
-                     : "\(model.rows.count) shown · \(model.listeningCount) listening")
+                     ? "\(model.rows.count) shown · \(model.hiddenSystemCount) system hidden · checked \(updated.formatted(.relative(presentation: .named)))"
+                     : "\(model.rows.count) shown · \(model.listeningCount) listening · checked \(updated.formatted(.relative(presentation: .named)))")
                     .font(.caption).foregroundStyle(.secondary)
                     .help("Updated \(updated.formatted(date: .omitted, time: .standard))")
             }

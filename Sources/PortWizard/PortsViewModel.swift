@@ -150,8 +150,23 @@ final class PortsViewModel: ObservableObject {
             .map { "\($0.port)/\($0.netProtocol.rawValue)" }).count
     }
 
-    func refresh() async {
+    /// How long the loading state stays up for a refresh the user asked for.
+    ///
+    /// A local `lsof` scan returns in well under a frame, so an indicator tied
+    /// strictly to the work appears and disappears without ever being seen —
+    /// which makes a refresh that worked look like it did nothing.
+    ///
+    /// Background re-scans deliberately skip the hold: the cadence goes down to
+    /// two seconds, and holding there would leave the indicator up almost
+    /// permanently, which is its own kind of lie.
+    private static let minimumVisibleRefresh: TimeInterval = 0.6
+
+    /// - Parameter userInitiated: whether someone is watching for a result —
+    ///   the refresh button, or opening the panel. Background timer re-scans
+    ///   pass `false`.
+    func refresh(userInitiated: Bool = false) async {
         isLoading = true
+        let startedAt = Date()
         defer { isLoading = false }
         do {
             let entries = try await Task.detached(priority: .userInitiated) {
@@ -166,6 +181,12 @@ final class PortsViewModel: ObservableObject {
             lastError = error.localizedDescription
         }
         rebuild()
+
+        guard userInitiated else { return }
+        let elapsed = Date().timeIntervalSince(startedAt)
+        if elapsed < Self.minimumVisibleRefresh {
+            try? await Task.sleep(for: .seconds(Self.minimumVisibleRefresh - elapsed))
+        }
     }
 
     /// Collapse raw entries into display rows, applying the active filter/search.
