@@ -69,8 +69,25 @@ first launch needs a right-click → **Open** to get past Gatekeeper.
 To build the DMG yourself:
 
 ```bash
-./scripts/build-dmg.sh        # → .build/PortWizard.dmg
+./scripts/build-dmg.sh        # → .build/PortWizard.dmg (ad-hoc signed)
 ```
+
+For a fully shippable, notarized DMG you need an Apple Developer account:
+
+```bash
+export DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)"
+export AC_KEYCHAIN_PROFILE="notary"   # see release.sh header for one-time setup
+./scripts/release.sh                  # → .build/PortWizard.dmg
+```
+
+`release.sh` builds, signs with a hardened runtime, packages, then notarizes and
+staples. With neither variable set it still produces the ad-hoc DMG above, so it
+is safe to run either way.
+
+> Sign through `release.sh`, not by hand around `build-dmg.sh`. Bare
+> `build-dmg.sh` rebuilds the app first, and that rebuild ad-hoc re-signs the
+> bundle — throwing away a Developer ID signature applied beforehand. That is
+> what `--no-build` exists to avoid.
 
 ## Build & run
 
