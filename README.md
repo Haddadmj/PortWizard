@@ -63,8 +63,12 @@ parse. See `Sources/PortWizard/PortScanner.swift`.
 ### From a release DMG
 
 Download the latest `PortWizard.dmg`, open it, and drag **Port Wizard** into
-**Applications**. Local builds are ad-hoc signed rather than notarized, so the
-first launch needs a right-click → **Open** to get past Gatekeeper.
+**Applications**. Release DMGs are signed with a Developer ID and notarized by
+Apple, so they open with a normal double-click — no right-click → Open, no
+Gatekeeper warning.
+
+A DMG you build yourself with `build-dmg.sh` is ad-hoc signed instead, and
+*that* one needs the right-click → **Open** on first launch.
 
 To build the DMG yourself:
 
