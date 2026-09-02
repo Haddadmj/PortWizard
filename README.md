@@ -8,6 +8,12 @@ without dropping into the terminal.
   <em>🧙 Lives in your menu bar. One click shows every listening and connected port.</em>
 </p>
 
+<p align="center">
+  <img alt="Platform" src="https://img.shields.io/badge/macOS-14%2B-black?logo=apple">
+  <img alt="Swift" src="https://img.shields.io/badge/Swift-6-orange?logo=swift">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
+</p>
+
 ## Features
 
 - **User apps only, by default** — Apple/system daemons (`ControlCenter`,
@@ -34,6 +40,12 @@ without dropping into the terminal.
 - **Exposed-port notifications** — optionally get notified the moment a process
   starts listening on a network-reachable port (a dev server coming up, or an
   unexpected port opening — a handy security signal). Toggle the 🔔 in the header.
+- **Mute the noisy ones** — a process that rebinds constantly can be muted from
+  its own row, and unmuted from the mute list in either the 🔔 menu or the
+  right-click menu. Apple's Continuity daemons are excluded by default for
+  exactly this reason; **Include macOS System Services** opts back in.
+- **Right-click menu** — the notification switches, the mute list, and Quit,
+  without opening the panel at all.
 - **Menu-bar badge** — shows a live count of listening ports, refreshed in the
   background.
 - **No dependencies, no privileges** — reads sockets via the system `lsof`.
@@ -45,6 +57,20 @@ Port Wizard shells out to `/usr/sbin/lsof` with machine-readable field output
 process and port for display. Field output is used instead of the human table
 because the table columns shift with address/state length and are fragile to
 parse. See `Sources/PortWizard/PortScanner.swift`.
+
+## Install
+
+### From a release DMG
+
+Download the latest `PortWizard.dmg`, open it, and drag **Port Wizard** into
+**Applications**. Local builds are ad-hoc signed rather than notarized, so the
+first launch needs a right-click → **Open** to get past Gatekeeper.
+
+To build the DMG yourself:
+
+```bash
+./scripts/build-dmg.sh        # → .build/PortWizard.dmg
+```
 
 ## Build & run
 
