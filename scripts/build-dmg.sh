@@ -31,14 +31,29 @@ elif [ ! -d "$APP_BUNDLE" ]; then
   exit 1
 fi
 
+if ! command -v create-dmg >/dev/null; then
+  echo "error: create-dmg is not installed; run: brew install create-dmg" >&2
+  exit 1
+fi
+
 echo "==> Staging DMG contents…"
 rm -rf "$STAGING_DIR" "$DMG_PATH"
 mkdir -p "$STAGING_DIR"
 cp -R "$APP_BUNDLE" "$STAGING_DIR/$APP_NAME.app"
-ln -s /Applications "$STAGING_DIR/Applications"
 
+# The icon positions match the arrow in the background; if they change, update
+# scripts/make-dmg-background.swift too and re-run it.
 echo "==> Creating ${DMG_PATH}..."
-hdiutil create -volname "Port Wizard" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
+create-dmg \
+  --volname "Port Wizard" \
+  --volicon "$ROOT/Resources/AppIcon.icns" \
+  --background "$ROOT/Resources/dmg-background.tiff" \
+  --window-size 660 400 \
+  --icon-size 128 \
+  --icon "$APP_NAME.app" 180 170 \
+  --hide-extension "$APP_NAME.app" \
+  --app-drop-link 480 170 \
+  "$DMG_PATH" "$STAGING_DIR"
 
 rm -rf "$STAGING_DIR"
 

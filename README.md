@@ -81,6 +81,10 @@ To build the DMG yourself:
 ./scripts/build-dmg.sh        # → .build/PortWizard.dmg (ad-hoc signed)
 ```
 
+This needs [`create-dmg`](https://github.com/create-dmg/create-dmg)
+(`brew install create-dmg`), and macOS asks to let it control Finder the first
+time, because that is how the window gets laid out.
+
 For a fully shippable, notarized DMG you need an Apple Developer account:
 
 ```bash
