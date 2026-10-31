@@ -8,7 +8,7 @@
 #        --apple-id you@example.com --team-id TEAMID --password <app-specific-pw>)
 #
 # Without those, it still produces an ad-hoc-signed, un-notarized DMG for local
-# sharing (recipients must right-click → Open the first time).
+# sharing (recipients must allow it under System Settings → Privacy & Security).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,7 +23,7 @@ echo "==> Building release app bundle…"
 
 if [ -n "${DEVELOPER_ID:-}" ]; then
   echo "==> Signing with Developer ID + hardened runtime…"
-  codesign --force --deep --options runtime --timestamp \
+  codesign --force --options runtime --timestamp \
     --sign "$DEVELOPER_ID" "$APP"
   codesign --verify --strict --verbose=2 "$APP"
 else
@@ -62,6 +62,13 @@ if [ -n "${DEVELOPER_ID:-}" ] && [ -n "${AC_KEYCHAIN_PROFILE:-}" ]; then
   xcrun notarytool submit "$DMG" --keychain-profile "$AC_KEYCHAIN_PROFILE" --wait
   echo "==> Stapling the DMG…"
   xcrun stapler staple "$DMG"
+  # Ask Gatekeeper rather than trusting the steps above: this is the same
+  # verdict a downloader's Mac reaches, for both the file and the app inside it.
+  echo "==> Verifying with Gatekeeper…"
+  xcrun stapler validate "$DMG"
+  spctl -a -vv -t open --context context:primary-signature "$DMG"
+  xcrun stapler validate "$APP"
+  spctl -a -vv -t exec "$APP"
   echo "==> Notarized & stapled ✓"
 else
   echo "==> Skipping notarization (need DEVELOPER_ID + AC_KEYCHAIN_PROFILE)."
