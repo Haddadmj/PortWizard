@@ -10,9 +10,7 @@ enum NetProtocol: String, Sendable {
 ///
 /// A single process (PID) can own many sockets, so `PortEntry` is deliberately
 /// per-socket. The UI groups these by process/port for display.
-struct PortEntry: Identifiable, Hashable, Sendable {
-    let id = UUID()
-
+struct PortEntry: Hashable, Sendable {
     /// Owning process id.
     let pid: Int32
     /// Owning process command name, e.g. `node`, `rapportd`, `Google Chrome H`.
@@ -34,17 +32,32 @@ struct PortEntry: Identifiable, Hashable, Sendable {
     /// TCP state such as `LISTEN`, `ESTABLISHED`. nil for UDP.
     let state: String?
 
-    /// Absolute path to the owning executable, resolved via `ps` after the
-    /// scan. nil when it could not be determined (e.g. permission denied).
+    /// Absolute path to the owning executable, resolved via `proc_pidpath`
+    /// after the scan. nil when it could not be determined (e.g. permission denied).
     var executablePath: String?
 
-    /// A listening socket is "exposed" — accepting inbound connections.
-    var isListening: Bool { state == "LISTEN" }
-
-    /// True when bound to a wildcard/all-interfaces address (reachable off-host).
-    var isPublicBind: Bool {
-        localHost == "*" || localHost == "0.0.0.0" || localHost == "::"
+    /// Whether this socket accepts inbound traffic: a TCP listener, or a UDP
+    /// socket with no fixed peer. UDP has no states, so the missing peer is the
+    /// only signal — a DNS server on 53 would otherwise never count as open.
+    var isListening: Bool {
+        state == "LISTEN" || (netProtocol == .udp && remote == nil)
     }
+
+    /// The bind hosts that mean "every interface".
+    static let wildcardHosts: Set<String> = ["*", "0.0.0.0", "::"]
+
+    var isWildcardBind: Bool { Self.wildcardHosts.contains(localHost) }
+
+    /// Whether the bind can only be reached from this Mac.
+    var isLoopback: Bool {
+        localHost == "localhost" || localHost == "::1"
+            || localHost.hasPrefix("127.") || localHost.hasPrefix("::ffff:127.")
+            || localHost.hasSuffix("%lo0")
+    }
+
+    /// True when reachable off-host: a wildcard bind, or a bind to one specific
+    /// interface such as `192.168.1.4`, which is just as open to that network.
+    var isPublicBind: Bool { !isLoopback }
 
     /// Whether this belongs to macOS/Apple itself rather than something the user
     /// started (a dev server, a database, Docker, …).

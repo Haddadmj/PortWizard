@@ -6,11 +6,19 @@ set -euo pipefail
 CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="PortWizard"
-BUILD_DIR="$ROOT/.build/$CONFIG"
 APP_BUNDLE="$ROOT/.build/$APP_NAME.app"
 
+# Release builds are universal: the app supports every Mac that runs macOS 14,
+# and an arm64-only download just fails to open on an Intel one. Debug stays
+# native, because it is only ever run on the machine that built it.
+BUILD_FLAGS=(-c "$CONFIG" --package-path "$ROOT")
+if [ "$CONFIG" = "release" ]; then
+  BUILD_FLAGS+=(--arch arm64 --arch x86_64)
+fi
+
 echo "==> Building ($CONFIG)…"
-swift build -c "$CONFIG" --package-path "$ROOT"
+swift build "${BUILD_FLAGS[@]}"
+BUILD_DIR="$(swift build "${BUILD_FLAGS[@]}" --show-bin-path)"
 
 echo "==> Assembling $APP_NAME.app…"
 rm -rf "$APP_BUNDLE"
@@ -29,8 +37,9 @@ if [ ! -f "$ICON" ]; then
 fi
 cp "$ICON" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
-# Ad-hoc sign so the app can run locally without Gatekeeper complaints.
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
+# Ad-hoc sign so the app can run locally. Apple Silicon refuses to launch an
+# unsigned binary, so a failure here has to fail the build.
+codesign --force --sign - "$APP_BUNDLE"
 
 echo "==> Done: $APP_BUNDLE"
 echo "    Run with: open \"$APP_BUNDLE\"   (look for the icon in the menu bar)"

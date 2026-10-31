@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Runs `lsof` and parses its machine-readable output into `PortEntry` values.
@@ -11,10 +12,12 @@ enum PortScanner {
     /// Error surfaced when `lsof` cannot be run or fails hard.
     enum ScanError: Error, LocalizedError {
         case launchFailed(String)
+        case timedOut
 
         var errorDescription: String? {
             switch self {
             case .launchFailed(let msg): return "Could not run lsof: \(msg)"
+            case .timedOut: return "lsof took too long to answer, so the scan was abandoned."
             }
         }
     }
@@ -30,33 +33,25 @@ enum PortScanner {
         let output = try run(arguments: ["-nP", "-i", "-FpcLftnPT"])
         var entries = parse(output)
 
-        // Enrich with executable paths in one batched `ps` call so system vs.
-        // user processes can be told apart (see PortEntry.isSystem).
-        let paths = executablePaths()
+        // Enrich with executable paths so system vs. user processes can be told
+        // apart (see PortEntry.isSystem). One lookup per process, not per socket.
+        var paths: [Int32: String] = [:]
         for i in entries.indices {
-            entries[i].executablePath = paths[entries[i].pid]
+            let pid = entries[i].pid
+            if paths[pid] == nil { paths[pid] = executablePath(pid: pid) }
+            entries[i].executablePath = paths[pid]
         }
         return entries
     }
 
-    /// Build a pid → executable-path map for all running processes via one
-    /// `ps` invocation. `comm` on macOS reports the full executable path.
-    static func executablePaths() -> [Int32: String] {
-        guard let output = try? run(
-            executable: "/bin/ps",
-            arguments: ["-axww", "-o", "pid=", "-o", "comm="]
-        ) else { return [:] }
-
-        var map: [Int32: String] = [:]
-        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
-            let trimmed = line.drop { $0 == " " }
-            guard let space = trimmed.firstIndex(of: " ") else { continue }
-            guard let pid = Int32(trimmed[..<space]) else { continue }
-            let path = trimmed[trimmed.index(after: space)...]
-                .trimmingCharacters(in: .whitespaces)
-            if !path.isEmpty { map[pid] = path }
-        }
-        return map
+    /// The absolute path of a process's executable, from the kernel. Unlike
+    /// `ps -o comm`, which reports argv[0], this stays absolute however the
+    /// process was launched — `node` from a shell included.
+    static func executablePath(pid: Int32) -> String? {
+        var buffer = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return String(decoding: buffer.prefix(Int(length)), as: UTF8.self)
     }
 
     /// Parse `lsof -F` output into per-socket entries.
@@ -183,18 +178,21 @@ enum PortScanner {
         return (host.isEmpty ? "*" : host, port)
     }
 
-    /// Run a process and return its stdout as a UTF-8 string.
-    private static func run(
-        executable: String = "/usr/sbin/lsof",
-        arguments: [String]
-    ) throws -> String {
+    /// How long `lsof` gets before the scan is abandoned. A healthy scan takes
+    /// a fraction of a second; a wedged one must not stall every later refresh.
+    private static let timeout: TimeInterval = 15
+
+    /// Run `lsof` and return its stdout.
+    private static func run(arguments: [String]) throws -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         process.arguments = arguments
 
         let stdout = Pipe()
         process.standardOutput = stdout
-        process.standardError = Pipe()
+        // Not a Pipe: nothing would drain it, and enough warnings on an unread
+        // pipe would block lsof forever.
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
@@ -202,10 +200,19 @@ enum PortScanner {
             throw ScanError.launchFailed(error.localizedDescription)
         }
 
+        let pid = process.processIdentifier
+        let watchdog = DispatchWorkItem { kill(pid, SIGKILL) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        watchdog.cancel()
+
+        if process.terminationReason == .uncaughtSignal { throw ScanError.timedOut }
         // lsof exits non-zero (1) when some sockets are inaccessible even though
         // it printed usable output, so we don't treat exit status as fatal.
-        return String(data: data, encoding: .utf8) ?? ""
+        // Lossy on purpose: one process name that isn't valid UTF-8 must not
+        // turn the whole scan into an empty list.
+        return String(decoding: data, as: UTF8.self)
     }
 }

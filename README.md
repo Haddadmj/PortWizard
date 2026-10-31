@@ -20,18 +20,20 @@ without dropping into the terminal.
   `rapportd`, `mDNSResponder`, …) are hidden so you see what *you* started:
   nginx, node/Express, Postgres, Docker, and friends. Toggle the 👁 button (or
   pass `--all` on the CLI) to reveal system processes.
-- **Listening ports at a glance** — everything currently accepting connections,
-  with the owning app, PID, and bind address.
-- **Exposed vs. local** — a badge flags ports bound to all interfaces
-  (🌐 reachable from the network) versus localhost-only (🔒).
-- **Real app names & icons** — GUI apps show their Launch Services name and icon
-  (Visual Studio Code, Docker, Chrome); CLI tools and daemons fall back to the
-  process name with a terminal glyph.
+- **Listening ports at a glance** — every TCP listener and unconnected UDP
+  socket, with the owning app, PID, and bind address.
+- **Exposed vs. local** — ports are grouped into *Reachable from the network*
+  (🌐 bound to all interfaces or to a specific one such as your LAN address) and
+  *This Mac only* (🔒 loopback).
+- **Real app names & icons** — anything inside an app bundle shows that app's
+  name and icon, helper processes included (Visual Studio Code, Docker, Chrome);
+  CLI tools and daemons fall back to the process name with a terminal glyph.
 - **Active connections** — switch to the *Connections* tab to see established
   sockets and their remote endpoints.
-- **Search** — filter instantly by app name, port number, or address.
-- **Quick actions** on hover:
-  - **Open in browser** — one click to `http://localhost:PORT` for TCP listeners.
+- **Search** — filter instantly by app name, port number, PID, or local or remote
+  address.
+- **Quick actions** on hover or right-click:
+  - **Open in browser** — one click to the port's URL for TCP listeners.
   - **Copy…** — port, `host:port`, full URL, PID, or executable path.
   - **Reveal** the executable in Finder.
   - **Quit / Force-Kill** — with a confirmation offering SIGTERM or SIGKILL.
@@ -49,6 +51,8 @@ without dropping into the terminal.
 - **Menu-bar badge** — shows a live count of listening ports, refreshed in the
   background.
 - **No dependencies, no privileges** — reads sockets via the system `lsof`.
+  Running unprivileged is also its one limit: sockets owned by root or another
+  user's processes aren't listed, because macOS doesn't reveal them to `lsof`.
 
 ## How it works
 
@@ -67,8 +71,9 @@ Download the latest `PortWizard.dmg`, open it, and drag **Port Wizard** into
 Apple, so they open with a normal double-click — no right-click → Open, no
 Gatekeeper warning.
 
-A DMG you build yourself with `build-dmg.sh` is ad-hoc signed instead, and
-*that* one needs the right-click → **Open** on first launch.
+A DMG you build yourself with `build-dmg.sh` is ad-hoc signed instead, so on
+another Mac it has to be allowed under **System Settings → Privacy & Security**
+on first launch.
 
 To build the DMG yourself:
 
@@ -84,8 +89,8 @@ export AC_KEYCHAIN_PROFILE="notary"   # see release.sh header for one-time setup
 ./scripts/release.sh                  # → .build/PortWizard.dmg
 ```
 
-`release.sh` builds, signs with a hardened runtime, packages, then notarizes and
-staples. With neither variable set it still produces the ad-hoc DMG above, so it
+`release.sh` builds a universal binary, signs with a hardened runtime, packages,
+notarizes and staples, then checks the result with Gatekeeper. With neither variable set it still produces the ad-hoc DMG above, so it
 is safe to run either way.
 
 > Sign through `release.sh`, not by hand around `build-dmg.sh`. Bare
@@ -114,13 +119,14 @@ swift run PortWizard --scan --all  # include macOS system processes
 
 ```bash
 swift build      # compile
-swift test       # run the lsof parser unit tests
+swift test       # run the unit tests
 ```
 
 The parser is pure and fully unit-tested against captured `lsof -F` fixtures
 (`Tests/PortWizardTests/ParserTests.swift`), so the tricky address-parsing logic
 (IPv4, bracketed IPv6, `host:port->remote`, wildcard UDP) is verified without
-needing live sockets.
+needing live sockets. Grouping, search, exposure, and notification diffing are
+pure too, and tested the same way.
 
 ### The icon
 

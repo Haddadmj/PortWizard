@@ -2,12 +2,22 @@ import AppKit
 import Combine
 import SwiftUI
 
+/// The deep link to this Mac's notification preferences.
+enum NotificationSettings {
+    @MainActor static func open() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+}
+
 /// Owns the menu-bar status item and the popover that hosts the SwiftUI UI.
 ///
 /// The whole app lives in the menu bar (LSUIElement); there is no dock icon or
 /// main window. Clicking the status item toggles a popover with the port list.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let model = PortsViewModel()
@@ -33,8 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // own that logic instead and can suspend it while a dialog is showing.
         popover.behavior = .applicationDefined
         popover.contentSize = NSSize(width: 420, height: 520)
+        popover.delegate = self
         popover.contentViewController = NSHostingController(
-            rootView: PortsView(model: model) { NSApp.terminate(nil) }
+            rootView: PortsView(
+                model: model,
+                onClose: { [weak self] in self?.popover.performClose(nil) },
+                onQuit: { NSApp.terminate(nil) }
+            )
         )
 
         // Close the popover on a click anywhere outside our app — unless a modal
@@ -50,8 +65,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // The badge follows the model rather than the timer, so anything that
+        // changes the count — the eye toggle, a kill, a manual refresh — shows up.
+        model.$listeningCount
+            .removeDuplicates()
+            .sink { [weak self] count in
+                self?.statusItem.button?.title = count > 0 ? " \(count)" : ""
+            }
+            .store(in: &cancellables)
+
         // Initial scan, then keep the list + badge fresh on the chosen cadence.
-        Task { await model.refresh(); updateBadge() }
+        Task { await model.refresh() }
 
         // Reschedule the auto-refresh timer whenever the user changes the
         // interval in the popover footer.
@@ -67,22 +91,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshTimer = nil
         guard let seconds = interval.seconds else { return }
         refreshTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                await self.model.refresh()
-                self.updateBadge()
-            }
+            Task { @MainActor in await self?.model.refresh() }
         }
+        // There is no precision to protect here, and a little slack lets macOS
+        // batch the wake-ups of an app that is always running.
+        refreshTimer?.tolerance = seconds * 0.1
     }
 
-    private func updateBadge() {
-        let count = model.listeningCount
-        statusItem.button?.title = count > 0 ? " \(count)" : ""
-    }
-
-    /// Left-click opens the port list; right-click opens the settings menu.
+    /// Left-click opens the port list; right-click (or control-click, its
+    /// equivalent on a trackpad or one-button mouse) opens the settings menu.
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
-        if NSApp.currentEvent?.type == .rightMouseUp {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
             showContextMenu(from: sender)
         } else {
             togglePopover(sender)
@@ -108,6 +128,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Automatic enabling looks for a responder that implements each action
         // and would re-enable the system-services item we deliberately grey out.
         menu.autoenablesItems = false
+
+        if model.notificationsEnabled && model.notificationsBlocked {
+            let settings = NSMenuItem(
+                title: "Allow Notifications in System Settings…",
+                action: #selector(openNotificationSettings), keyEquivalent: ""
+            )
+            settings.target = self
+            menu.addItem(settings)
+            menu.addItem(.separator())
+        }
 
         let notify = NSMenuItem(
             title: "Notify About Newly Exposed Ports",
@@ -152,6 +182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        menu.addItem(label(["Port Wizard", version].compactMap(\.self).joined(separator: " ")))
         let quit = NSMenuItem(
             title: "Quit Port Wizard", action: #selector(quit), keyEquivalent: "q"
         )
@@ -166,6 +198,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
         return item
+    }
+
+    @objc private func openNotificationSettings() {
+        NotificationSettings.open()
     }
 
     @objc private func toggleNotifications() {
@@ -193,9 +229,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            Task { await model.refresh(); updateBadge() }
+            model.syncNotificationPermission()
+            Task { await model.refresh(userInitiated: true) }
+            // An agent app isn't active by default; until it is, keystrokes keep
+            // going to the app underneath instead of the filter field.
+            NSApp.activate()
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    /// Hand focus back to whichever app was in use before the panel opened.
+    func popoverDidClose(_ notification: Notification) {
+        NSApp.hide(nil)
     }
 }
