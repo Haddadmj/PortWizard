@@ -3,23 +3,55 @@ import SwiftUI
 /// The popover content: a searchable, filterable list of ports with per-row actions.
 struct PortsView: View {
     @ObservedObject var model: PortsViewModel
+    var onClose: () -> Void
     var onQuit: () -> Void
+
+    /// The row whose kill confirmation is showing. Held here rather than on the
+    /// row because a row can vanish mid-dialog — its process exiting, or the
+    /// lazy list recycling it — and that must not take the dialog's state along.
+    @State private var killTarget: PortRow?
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
             content
+            if let message = model.actionError { actionErrorBanner(message) }
             Divider()
             footer
         }
         .frame(width: 420, height: 520)
-        .task { await model.refresh(userInitiated: true) }
+        .onExitCommand {
+            if model.searchText.isEmpty { onClose() } else { model.searchText = "" }
+        }
+        .confirmationDialog(
+            killTarget.map { "Quit \($0.displayName) (PID \($0.pid))?" } ?? "",
+            isPresented: Binding(
+                get: { killTarget != nil },
+                set: { if !$0 { killTarget = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: killTarget
+        ) { row in
+            Button("Quit (SIGTERM)") { model.terminate(row, signal: SIGTERM) }
+            Button("Force Kill (SIGKILL)", role: .destructive) {
+                model.terminate(row, signal: SIGKILL)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { row in
+            Text("This releases port \(String(row.port)). SIGTERM asks it to quit; "
+                + "Force Kill terminates it immediately.")
+        }
+        .onChange(of: killTarget) { _, target in
+            model.modalActive = target != nil
+        }
     }
 
+    // MARK: - Header
+
     private var header: some View {
-        VStack(spacing: 8) {
-            HStack {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
                 // The same mark the menu bar shows, so the panel that opens
                 // is recognisably the thing that was clicked.
                 Image(nsImage: StatusIcon.shared)
@@ -28,22 +60,16 @@ struct PortsView: View {
                 Text("Port Wizard").font(.headline)
                 Spacer()
                 notificationMenu
-                Button {
-                    model.showSystem.toggle()
-                } label: {
-                    Image(systemName: model.showSystem ? "eye" : "eye.slash")
-                }
-                .buttonStyle(.borderless)
-                .help(model.showSystem
-                      ? "Hide macOS system processes"
-                      : "Show macOS system processes")
-                Button {
+                IconButton(
+                    symbol: model.showSystem ? "eye" : "eye.slash",
+                    label: model.showSystem
+                        ? "Hide macOS system processes"
+                        : "Show macOS system processes"
+                ) { model.showSystem.toggle() }
+                IconButton(symbol: "arrow.clockwise", label: "Refresh") {
                     Task { await model.refresh(userInitiated: true) }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.borderless)
-                .help("Refresh")
+                .keyboardShortcut("r", modifiers: .command)
                 .disabled(model.isLoading)
             }
 
@@ -51,8 +77,15 @@ struct PortsView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Filter by app, port, or address", text: $model.searchText)
                     .textFieldStyle(.plain)
+                if !model.searchText.isEmpty {
+                    IconButton(symbol: "xmark.circle.fill", label: "Clear filter") {
+                        model.searchText = ""
+                    }
+                    .foregroundStyle(.secondary)
+                }
             }
-            .padding(6)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
 
             Picker("", selection: $model.filter) {
@@ -71,6 +104,12 @@ struct PortsView: View {
     /// without hunting for the row that set it.
     private var notificationMenu: some View {
         Menu {
+            if model.notificationsBlocked {
+                Button("Allow Notifications in System Settings…") {
+                    NotificationSettings.open()
+                }
+                Divider()
+            }
             Toggle("Notify about newly exposed ports", isOn: $model.notificationsEnabled)
             Toggle("Include macOS system services", isOn: $model.notifySystemServices)
                 .disabled(!model.notificationsEnabled)
@@ -87,14 +126,19 @@ struct PortsView: View {
                 }
             }
         } label: {
-            Image(systemName: model.notificationsEnabled ? "bell.fill" : "bell.slash")
+            Image(systemName: model.notificationsEnabled && !model.notificationsBlocked
+                  ? "bell.fill" : "bell.slash")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .foregroundStyle(model.notificationsEnabled ? Color.accentColor : .secondary)
-        .help("Notification settings")
+        .help(model.notificationsBlocked
+              ? "Notifications are turned off for Port Wizard in System Settings"
+              : "Notification settings")
     }
+
+    // MARK: - Content
 
     @ViewBuilder
     private var content: some View {
@@ -104,74 +148,151 @@ struct PortsView: View {
             emptyState
         } else {
             ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(model.rows) { row in
-                        PortRowView(
-                            row: row,
-                            isMuted: model.isMuted(row.command),
-                            onChange: { Task { await model.refresh() } },
-                            setModal: { model.modalActive = $0 },
-                            toggleMute: { model.toggleMute(row.command) }
-                        )
-                        Divider()
+                LazyVStack(spacing: 0, pinnedViews: .sectionHeaders) {
+                    ForEach(PortSection.allCases) { section in
+                        let rows = model.rows.filter { $0.section == section }
+                        if !rows.isEmpty {
+                            Section {
+                                ForEach(rows) { row in
+                                    PortRowView(
+                                        row: row,
+                                        isMuted: model.isMuted(row.command),
+                                        toggleMute: { model.toggleMute(row.command) },
+                                        requestKill: { killTarget = row }
+                                    )
+                                }
+                            } header: {
+                                sectionHeader(section, count: rows.count)
+                            }
+                        }
                     }
                 }
+                .padding(.bottom, 8)
             }
+            .frame(maxHeight: .infinity)
         }
+    }
+
+    private func sectionHeader(_ section: PortSection, count: Int) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: section.symbol)
+            Text(section.title)
+            Spacer()
+            Text(verbatim: String(count)).monospacedDigit()
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(section == .exposed ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
     }
 
     private func errorState(_ error: String) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle").font(.largeTitle)
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle).foregroundStyle(.secondary)
             Text(error).multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
+            Button("Try Again") {
+                Task { await model.refresh(userInitiated: true) }
+            }
+            .buttonStyle(.link)
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Nothing to list has three different causes, and each has its own way out.
     private var emptyState: some View {
         VStack(spacing: 8) {
-            Image(systemName: model.isLoading ? "hourglass" : "checkmark.seal")
-                .font(.largeTitle).foregroundStyle(.secondary)
-            Text(model.isLoading ? "Scanning ports…" : "No matching ports")
-                .foregroundStyle(.secondary)
-            if !model.isLoading, model.hiddenSystemCount > 0 {
-                Button("Show \(model.hiddenSystemCount) system port(s)") {
-                    model.showSystem = true
+            if model.lastUpdated == nil {
+                ProgressView().controlSize(.large)
+                Text("Scanning ports…").foregroundStyle(.secondary)
+            } else if !model.searchText.isEmpty {
+                Image(systemName: "magnifyingglass")
+                    .font(.largeTitle).foregroundStyle(.secondary)
+                Text("No ports match “\(model.searchText)”").foregroundStyle(.secondary)
+                Button("Clear Filter") { model.searchText = "" }
+                    .buttonStyle(.link)
+            } else {
+                Image(systemName: "checkmark.seal")
+                    .font(.largeTitle).foregroundStyle(.secondary)
+                Text("No ports here").foregroundStyle(.secondary)
+                if model.hiddenSystemCount > 0 {
+                    Button("Show \(model.hiddenSystemCount) system port(s)") {
+                        model.showSystem = true
+                    }
+                    .buttonStyle(.link)
                 }
-                .buttonStyle(.link)
             }
         }
+        .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func actionErrorBanner(_ message: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Text(message).font(.caption).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            IconButton(symbol: "xmark", label: "Dismiss") { model.actionError = nil }
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
+    }
+
+    // MARK: - Footer
+
     private var footer: some View {
-        HStack {
-            // The scan time used to live only in a tooltip, so a re-scan that
-            // found the same ports — the common case — left the panel looking
-            // untouched. It is on the face of the footer now.
-            if model.isLoading {
-                HStack(spacing: 5) {
-                    ProgressView().controlSize(.small)
-                    Text("Scanning…")
-                }
-                .font(.caption).foregroundStyle(.secondary)
-            } else if let updated = model.lastUpdated {
-                Text(model.hiddenSystemCount > 0
-                     ? "\(model.rows.count) shown · \(model.hiddenSystemCount) system hidden · checked \(updated.formatted(.relative(presentation: .named)))"
-                     : "\(model.rows.count) shown · \(model.listeningCount) listening · checked \(updated.formatted(.relative(presentation: .named)))")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .help("Updated \(updated.formatted(date: .omitted, time: .standard))")
-            }
-            Spacer()
+        HStack(spacing: 12) {
+            status
+            Spacer(minLength: 0)
             intervalMenu
-            Button("Quit", action: onQuit)
-                .buttonStyle(.borderless)
+            IconButton(symbol: "power", label: "Quit Port Wizard", action: onQuit)
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// The scan time stays on the face of the footer so a re-scan that found the
+    /// same ports — the common case — doesn't leave the panel looking untouched.
+    /// It re-renders on its own clock, or at a Manual cadence it would claim
+    /// "now" indefinitely.
+    @ViewBuilder
+    private var status: some View {
+        if model.isLoading {
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini)
+                Text("Scanning…")
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        } else if let updated = model.lastUpdated {
+            TimelineView(.periodic(from: updated, by: 1)) { context in
+                Text(statusLine(updated: updated, now: context.date))
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    .lineLimit(1)
+            }
+            .help("Updated \(updated.formatted(date: .omitted, time: .standard))")
+        }
+    }
+
+    private func statusLine(updated: Date, now: Date) -> String {
+        var parts = ["\(model.rows.count) shown"]
+        if model.hiddenSystemCount > 0 { parts.append("\(model.hiddenSystemCount) system hidden") }
+        parts.append(Self.age(of: updated, now: now))
+        return parts.joined(separator: " · ")
+    }
+
+    static func age(of date: Date, now: Date) -> String {
+        let seconds = Int(now.timeIntervalSince(date))
+        if seconds < 2 { return "just now" }
+        if seconds < 60 { return "\(seconds)s ago" }
+        if seconds < 3600 { return "\(seconds / 60)m ago" }
+        return "\(seconds / 3600)h ago"
     }
 
     /// Auto-refresh cadence picker, living in the footer.
@@ -193,155 +314,157 @@ struct PortsView: View {
     }
 }
 
-/// A single port row with expandable action buttons.
+/// A borderless symbol button, labelled for VoiceOver as well as on hover.
+private struct IconButton: View {
+    let symbol: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol).accessibilityLabel(label)
+        }
+        .buttonStyle(.borderless)
+        .help(label)
+    }
+}
+
+/// A single port row. Actions overlay its trailing edge on hover rather than
+/// sitting in the layout, so reaching for one doesn't make the text jump.
 private struct PortRowView: View {
     let row: PortRow
     /// Whether this row's command is muted from exposed-port notifications.
     let isMuted: Bool
-    var onChange: () -> Void
-    var setModal: (Bool) -> Void
     var toggleMute: () -> Void
+    var requestKill: () -> Void
     @State private var hovering = false
     @State private var copied = false
-    @State private var showKillConfirm = false
-
-    private var info: AppInfo.Info { AppInfo.lookup(pid: row.pid, fallbackCommand: row.command) }
 
     var body: some View {
-        HStack(spacing: 10) {
-            // Port badge.
-            VStack(spacing: 2) {
-                Text("\(row.port)")
+        HStack(spacing: 12) {
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(verbatim: String(row.port))
                     .font(.system(.body, design: .monospaced).weight(.semibold))
                 Text(row.protocolLabel)
-                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                    .font(.caption2).foregroundStyle(.secondary)
             }
-            .frame(width: 56)
+            .frame(width: 48, alignment: .trailing)
 
-            // App icon.
-            if let icon = info.icon {
-                Image(nsImage: icon)
-                    .resizable().aspectRatio(contentMode: .fit)
-                    .frame(width: 22, height: 22)
+            appIcon
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(row.displayName)
+                    .fontWeight(.medium).lineLimit(1)
+                    .help(row.executablePath ?? row.command)
+                Text(detail)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .help(row.remotes.joined(separator: "\n"))
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(info.name).font(.callout.weight(.medium)).lineLimit(1)
-                HStack(spacing: 6) {
-                    Text("PID \(row.pid)")
-                    Text("·")
-                    Text(row.hostSummary).lineLimit(1)
-                    if isMuted {
-                        Image(systemName: "bell.slash")
-                            .help("Muted — this process won't raise port notifications")
-                    }
-                }
-                .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 4)
+            Spacer(minLength: 0)
 
-            if hovering {
-                actions
-            } else {
-                statusBadge
+            if isMuted {
+                Image(systemName: "bell.slash")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Muted — this process won't raise port notifications")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(minHeight: 40)
         .contentShape(Rectangle())
-        .background((hovering || showKillConfirm) ? Color.secondary.opacity(0.08) : .clear)
-        .onHover { hovering = $0 }
-        .confirmationDialog(
-            "Quit \(info.name) (PID \(row.pid))?",
-            isPresented: $showKillConfirm, titleVisibility: .visible
-        ) {
-            Button("Quit (SIGTERM)") { kill(SIGTERM) }
-            Button("Force Kill (SIGKILL)", role: .destructive) { kill(SIGKILL) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This releases port \(row.port). SIGTERM asks it to quit; "
-                + "Force Kill terminates it immediately.")
+        .background(
+            hovering ? Color.secondary.opacity(0.12) : .clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .overlay(alignment: .trailing) {
+            if hovering { actions.padding(.trailing, 8) }
         }
-        // A confirmationDialog is a sheet that steals key focus; tell the app to
-        // hold the transient popover open while it's presented.
-        .onChange(of: showKillConfirm) { _, presented in
-            setModal(presented)
+        .padding(.horizontal, 4)
+        .onHover { hovering = $0 }
+        .contextMenu { menuItems }
+    }
+
+    /// Bundled apps show their own icon; bare executables get a terminal glyph.
+    @ViewBuilder
+    private var appIcon: some View {
+        if let bundle = row.appBundlePath {
+            Image(nsImage: AppIcon.image(forBundle: bundle))
+                .resizable().aspectRatio(contentMode: .fit)
+                .frame(width: 24, height: 24)
+        } else {
+            Image(systemName: "terminal")
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
         }
     }
 
-    private var statusBadge: some View {
-        Group {
-            if row.isListening {
-                Label(row.isPublicBind ? "Exposed" : "Local",
-                      systemImage: row.isPublicBind ? "globe" : "lock")
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(row.isPublicBind ? .orange : .green)
-                    .help(row.isPublicBind
-                          ? "Listening on all interfaces (reachable from the network)"
-                          : "Listening on localhost only")
-            } else {
-                Text("×\(row.connectionCount)")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .help("\(row.connectionCount) active connection(s)")
-            }
-        }
-        .frame(width: 28)
+    /// The second line: where the port is bound, or for a connection who is on
+    /// the other end.
+    private var detail: String {
+        let pid = "PID \(row.pid)"
+        guard let remote = row.remotes.first else { return "\(pid) · \(row.hostSummary)" }
+        let more = row.remotes.count > 1 ? " +\(row.remotes.count - 1)" : ""
+        return "\(pid) · → \(remote)\(more)"
     }
 
     private var actions: some View {
-        HStack(spacing: 4) {
-            if row.isBrowsable {
+        HStack(spacing: 8) {
+            if let url = row.url {
                 Button {
-                    if let url = URL(string: "http://\(row.reachableHost):\(row.port)") {
-                        NSWorkspace.shared.open(url)
-                    }
-                } label: { Image(systemName: "safari") }
-                    .help("Open http://\(row.reachableHost):\(row.port) in browser")
+                    NSWorkspace.shared.open(url)
+                } label: { Image(systemName: "safari").accessibilityLabel("Open in browser") }
+                    .help("Open \(url.absoluteString) in browser")
             }
 
             Menu {
-                Button("Copy port \(row.port)") { copy("\(row.port)") }
-                Button("Copy \(row.reachableHost):\(row.port)") {
-                    copy("\(row.reachableHost):\(row.port)")
-                }
-                Button("Copy URL") { copy("http://\(row.reachableHost):\(row.port)") }
-                Button("Copy PID \(row.pid)") { copy("\(row.pid)") }
-                if let path = row.executablePath {
-                    Button("Copy executable path") { copy(path) }
-                }
-                Divider()
-                Button(isMuted
-                       ? "Unmute notifications for \(row.command)"
-                       : "Mute notifications for \(row.command)") {
-                    toggleMute()
-                }
+                menuItems
             } label: {
                 Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
                     .foregroundStyle(copied ? .green : .primary)
+                    .accessibilityLabel("More actions")
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("Copy…")
+            .help("Copy, reveal, or mute…")
 
-            Button {
-                ProcessActions.revealInFinder(pid: row.pid)
-            } label: { Image(systemName: "magnifyingglass.circle") }
-                .help("Reveal executable in Finder")
-
-            Button(role: .destructive) {
-                showKillConfirm = true
-            } label: { Image(systemName: "xmark.circle") }
-                .help("Quit or force-kill process")
-                .foregroundStyle(.red)
+            Button(role: .destructive, action: requestKill) {
+                Image(systemName: "xmark.circle").accessibilityLabel("Quit process")
+            }
+            .help("Quit or force-kill process")
+            .foregroundStyle(.red)
         }
         .buttonStyle(.borderless)
-        .imageScale(.large)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
     }
 
-    private func kill(_ sig: Int32) {
-        ProcessActions.signal(pid: row.pid, sig: sig)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { onChange() }
+    /// Shared by the hover menu and the row's right-click menu.
+    @ViewBuilder
+    private var menuItems: some View {
+        Button("Copy port \(String(row.port))") { copy(String(row.port)) }
+        Button("Copy \(row.address)") { copy(row.address) }
+        if let url = row.url {
+            Button("Copy URL") { copy(url.absoluteString) }
+        }
+        Button("Copy PID \(String(row.pid))") { copy(String(row.pid)) }
+        if let path = row.executablePath {
+            Button("Copy executable path") { copy(path) }
+            Divider()
+            Button("Reveal executable in Finder") {
+                ProcessActions.revealInFinder(path: path)
+            }
+        }
+        Divider()
+        Button(isMuted
+               ? "Unmute notifications for \(row.command)"
+               : "Mute notifications for \(row.command)",
+               action: toggleMute)
+        Divider()
+        Button("Quit or Force Kill…", role: .destructive, action: requestKill)
     }
 
     private func copy(_ text: String) {

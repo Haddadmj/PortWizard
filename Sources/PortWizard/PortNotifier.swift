@@ -2,15 +2,22 @@ import Foundation
 import UserNotifications
 
 /// Posts a local notification when a process starts listening on a
-/// network-reachable port (a wildcard/all-interfaces bind), which is both a
-/// convenience ("your dev server is up") and a light security signal ("what
-/// just opened a port to the network?").
+/// network-reachable port, which is both a convenience ("your dev server is
+/// up") and a light security signal ("what just opened a port to the network?").
 ///
-/// Notifications require a signed app bundle; when run via `swift run` the
-/// UNUserNotificationCenter calls are simply no-ops that fail silently.
+/// Notifications require an app bundle: `UNUserNotificationCenter.current()`
+/// raises an exception without one, so under `swift run` nothing touches it.
 @MainActor
-final class PortNotifier {
-    private var authorized = false
+final class PortNotifier: NSObject, UNUserNotificationCenterDelegate {
+    /// The user's switch. While off, scans neither notify nor keep a baseline,
+    /// so turning it back on starts from a clean one.
+    var enabled = false {
+        didSet { if !enabled { reset() } }
+    }
+
+    /// Whether macOS has granted permission to post.
+    var authorized = false
+
     /// Exposed-port keys seen on the previous scan, to diff against.
     private var known: Set<String>?
 
@@ -24,13 +31,35 @@ final class PortNotifier {
     /// that are just as chatty (Docker, Dropbox, a hot-reloading dev server).
     var mutedCommands: Set<String> = []
 
-    /// Ask the user for notification permission. Call when the feature is
-    /// enabled from the UI.
-    func requestAuthorization() {
-        UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
-                Task { @MainActor in self?.authorized = granted }
-            }
+    /// Delivers one notification. Replaceable so the diffing can be tested
+    /// without a notification center.
+    var post: (PortEntry) -> Void = PortNotifier.deliver
+
+    /// Where UDP's ephemeral range starts on macOS. Clients bind unconnected
+    /// sockets up here all the time, so only ports below it are worth a banner.
+    static let firstEphemeralPort = 49152
+
+    /// Ask macOS for permission and report the answer. Prompts only the first
+    /// time, so it is also how a later change in System Settings gets noticed.
+    func requestAuthorization(completion: @escaping @MainActor (Bool) -> Void) {
+        guard Bundle.main.bundleIdentifier != nil else { return completion(false) }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        Task {
+            let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+            authorized = granted
+            completion(granted)
+        }
+    }
+
+    /// Without this, macOS withholds the banner while the panel is open, because
+    /// that makes this the frontmost app.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
     }
 
     /// Forget the baseline so re-enabling doesn't replay old ports as "new".
@@ -43,6 +72,7 @@ final class PortNotifier {
     /// Whether this socket is allowed to raise a notification at all.
     func isNotifiable(_ entry: PortEntry) -> Bool {
         guard entry.isListening, entry.isPublicBind else { return false }
+        if entry.netProtocol == .udp, entry.port >= Self.firstEphemeralPort { return false }
         guard includeSystem || !entry.isSystem else { return false }
         return !mutedCommands.contains(entry.command)
     }
@@ -57,9 +87,11 @@ final class PortNotifier {
         "\(entry.command)|\(entry.port)/\(entry.netProtocol.rawValue)"
     }
 
-    /// Diff the current exposed (public-bind, listening) ports against the last
-    /// scan and notify about any that are newly present.
+    /// Diff the current exposed ports against the last scan and notify about
+    /// any that are newly present.
     func handle(entries: [PortEntry]) {
+        guard enabled else { return }
+
         let exposed = entries.filter(isNotifiable)
         let current = Dictionary(
             exposed.map { (Self.key(for: $0), $0) },
@@ -71,14 +103,16 @@ final class PortNotifier {
         guard let previous = known, authorized else { return }
 
         for (key, entry) in current where !previous.contains(key) {
-            notify(entry)
+            post(entry)
         }
     }
 
-    private func notify(_ entry: PortEntry) {
+    private nonisolated static func deliver(_ entry: PortEntry) {
         let content = UNMutableNotificationContent()
         content.title = "New port exposed: \(entry.port)/\(entry.netProtocol.rawValue)"
-        content.body = "\(entry.command) is now listening on all interfaces."
+        content.body = entry.isWildcardBind
+            ? "\(entry.command) is now listening on all interfaces."
+            : "\(entry.command) is now listening on \(entry.localHost)."
         content.sound = .default
 
         let request = UNNotificationRequest(

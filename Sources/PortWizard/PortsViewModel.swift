@@ -1,54 +1,6 @@
 import Foundation
 import SwiftUI
 
-/// A port grouped with the process(es) using it, ready for display.
-///
-/// lsof reports one row per file descriptor, so a single listening port often
-/// appears twice (IPv4 + IPv6). We collapse those into one row keyed by
-/// (port, protocol, command, listening-vs-connected).
-struct PortRow: Identifiable, Hashable {
-    let id: String
-    let port: Int
-    let netProtocol: NetProtocol
-    let command: String
-    let pid: Int32
-    let user: String
-    let isListening: Bool
-    let isPublicBind: Bool
-    /// Distinct local bind hosts collapsed into this row (e.g. `*`, `127.0.0.1`).
-    let hosts: [String]
-    /// Number of connections collapsed here (established rows only).
-    let connectionCount: Int
-    /// Absolute path to the owning executable, if resolved.
-    let executablePath: String?
-
-    /// A host suitable for building a URL — a concrete loopback/interface
-    /// address, mapping wildcard binds to `localhost`.
-    var reachableHost: String {
-        if let concrete = hosts.first(where: { $0 != "*" && $0 != "0.0.0.0" && $0 != "::" }) {
-            return concrete == "::1" ? "localhost" : concrete
-        }
-        return "localhost"
-    }
-
-    /// Only TCP listeners are plausibly openable in a browser.
-    var isBrowsable: Bool { isListening && netProtocol == .tcp }
-
-    var protocolLabel: String { netProtocol.rawValue }
-
-    var hostSummary: String {
-        hosts.joined(separator: ", ")
-    }
-}
-
-/// Which kinds of ports to show.
-enum PortFilter: String, CaseIterable, Identifiable {
-    case exposed = "Listening"
-    case connections = "Connections"
-    case all = "All"
-    var id: String { rawValue }
-}
-
 /// How often the port list re-scans in the background.
 enum RefreshInterval: Int, CaseIterable, Identifiable, Sendable {
     case off = 0
@@ -82,20 +34,36 @@ enum RefreshInterval: Int, CaseIterable, Identifiable, Sendable {
 @MainActor
 final class PortsViewModel: ObservableObject {
     @Published private(set) var rows: [PortRow] = []
+    /// True while someone is waiting on a refresh. Background re-scans leave it
+    /// alone, or the footer would flicker on every tick.
     @Published private(set) var isLoading = false
     @Published private(set) var lastError: String?
     @Published private(set) var lastUpdated: Date?
+    /// Why the last quit or force-kill failed, until it is dismissed.
+    @Published var actionError: String?
 
-    /// True while a modal (e.g. the kill confirmation dialog) is on screen. The
-    /// AppDelegate watches this to stop the transient popover auto-closing —
-    /// otherwise the dialog steals key focus and the popover dismisses with it.
-    @Published var modalActive = false
+    /// Distinct listening ports currently shown — the menu-bar badge.
+    @Published private(set) var listeningCount = 0
+    /// System rows the active filter would show if system processes weren't hidden.
+    @Published private(set) var hiddenSystemCount = 0
+
+    /// True when notifications are switched on here but denied in System Settings.
+    @Published private(set) var notificationsBlocked = false
+
+    /// True while the kill confirmation is on screen. The AppDelegate reads this
+    /// so a click outside doesn't close the panel out from under the dialog.
+    var modalActive = false
 
     @Published var searchText = "" { didSet { rebuild() } }
-    @Published var filter: PortFilter = .exposed { didSet { rebuild() } }
+    @Published var filter: PortFilter = .listening { didSet { rebuild() } }
     /// When false (default), macOS/Apple system processes are hidden so only
     /// user-initiated apps (nginx, node, Docker, …) are listed.
-    @Published var showSystem = false { didSet { rebuild() } }
+    @Published var showSystem = false {
+        didSet {
+            UserDefaults.standard.set(showSystem, forKey: Self.showSystemKey)
+            rebuild()
+        }
+    }
 
     /// Background re-scan cadence. Persisted so it survives relaunches; the
     /// AppDelegate observes this to (re)schedule its timer.
@@ -109,11 +77,8 @@ final class PortsViewModel: ObservableObject {
     @Published var notificationsEnabled = false {
         didSet {
             UserDefaults.standard.set(notificationsEnabled, forKey: Self.notifyKey)
-            if notificationsEnabled {
-                notifier.requestAuthorization()
-            } else {
-                notifier.reset()
-            }
+            notifier.enabled = notificationsEnabled
+            syncNotificationPermission()
         }
     }
 
@@ -140,6 +105,7 @@ final class PortsViewModel: ObservableObject {
     }
 
     private static let intervalKey = "refreshIntervalSeconds"
+    private static let showSystemKey = "showSystemProcesses"
     private static let notifyKey = "notificationsEnabled"
     private static let notifySystemKey = "notifySystemServices"
     private static let mutedKey = "mutedCommands"
@@ -152,6 +118,7 @@ final class PortsViewModel: ObservableObject {
 
         // didSet does not run for these during init, so the notifier is synced
         // by hand rather than relying on the property observers.
+        showSystem = UserDefaults.standard.bool(forKey: Self.showSystemKey)
         notifySystemServices = UserDefaults.standard.bool(forKey: Self.notifySystemKey)
         mutedCommands = Set(
             UserDefaults.standard.stringArray(forKey: Self.mutedKey) ?? []
@@ -160,7 +127,20 @@ final class PortsViewModel: ObservableObject {
         notifier.mutedCommands = mutedCommands
 
         notificationsEnabled = UserDefaults.standard.bool(forKey: Self.notifyKey)
-        if notificationsEnabled { notifier.requestAuthorization() }
+        notifier.enabled = notificationsEnabled
+        syncNotificationPermission()
+    }
+
+    /// Re-check permission when notifications matter, so a change made in System
+    /// Settings shows up here. A no-op while the switch is off.
+    func syncNotificationPermission() {
+        guard notificationsEnabled else {
+            notificationsBlocked = false
+            return
+        }
+        notifier.requestAuthorization { [weak self] granted in
+            self?.notificationsBlocked = !granted
+        }
     }
 
     /// Whether `command` is currently muted from notifications.
@@ -181,58 +161,72 @@ final class PortsViewModel: ObservableObject {
         mutedCommands.removeAll()
     }
 
+    /// Signal a row's process, then re-scan once it has had a moment to exit.
+    ///
+    /// The row can be seconds old by the time the dialog is answered, so the pid
+    /// is only trusted if the latest scan still has the same command behind it —
+    /// otherwise a reused pid would have an innocent process killed.
+    func terminate(_ row: PortRow, signal: Int32) {
+        actionError = nil
+        if allEntries.contains(where: { $0.pid == row.pid && $0.command == row.command }) {
+            do {
+                try ProcessActions.signal(pid: row.pid, sig: signal)
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(0.4))
+            await refresh(userInitiated: true)
+        }
+    }
+
     /// All entries from the most recent scan, before filtering.
     private var allEntries: [PortEntry] = []
 
-    /// Entries after applying the show-system toggle — the pool everything else
-    /// (counts, grouping, search) works from.
-    private var visibleEntries: [PortEntry] {
-        showSystem ? allEntries : allEntries.filter { !$0.isSystem }
-    }
-
-    /// Number of hidden system listening ports, for the "show system" hint.
-    var hiddenSystemCount: Int {
-        showSystem ? 0 : Set(allEntries.filter { $0.isSystem && $0.isListening }
-            .map { "\($0.port)/\($0.netProtocol.rawValue)" }).count
-    }
-
-    /// Number of exposed (listening) ports currently shown — the menu-bar badge.
-    var listeningCount: Int {
-        Set(visibleEntries.filter(\.isListening)
-            .map { "\($0.port)/\($0.netProtocol.rawValue)" }).count
-    }
+    /// The scan currently running, if any. Scans can outlast the two-second
+    /// cadence, and overlapping ones could finish out of order and overwrite a
+    /// newer result with an older one.
+    private var scanTask: Task<Void, Never>?
+    /// Refreshes someone is waiting on; the loading state lasts until the last.
+    private var visibleRefreshes = 0
 
     /// How long the loading state stays up for a refresh the user asked for.
     ///
     /// A local `lsof` scan returns in well under a frame, so an indicator tied
     /// strictly to the work appears and disappears without ever being seen —
     /// which makes a refresh that worked look like it did nothing.
-    ///
-    /// Background re-scans deliberately skip the hold: the cadence goes down to
-    /// two seconds, and holding there would leave the indicator up almost
-    /// permanently, which is its own kind of lie.
     private static let minimumVisibleRefresh: TimeInterval = 0.6
 
     /// - Parameter userInitiated: whether someone is watching for a result —
-    ///   the refresh button, or opening the panel. Background timer re-scans
-    ///   pass `false`.
+    ///   the refresh button, opening the panel, or a kill. Background timer
+    ///   re-scans pass `false` and are dropped if a scan is already running;
+    ///   a watched refresh waits and scans afresh, since the running scan may
+    ///   predate whatever prompted it.
     func refresh(userInitiated: Bool = false) async {
-        isLoading = true
-        let startedAt = Date()
-        defer { isLoading = false }
-        do {
-            let entries = try await Task.detached(priority: .userInitiated) {
-                try PortScanner.scan()
-            }.value
-            allEntries = entries
-            lastError = nil
-            lastUpdated = Date()
-            AppInfo.prune(livePIDs: Set(entries.map(\.pid)))
-            notifier.handle(entries: entries)
-        } catch {
-            lastError = error.localizedDescription
+        if userInitiated {
+            visibleRefreshes += 1
+            isLoading = true
         }
-        rebuild()
+        defer {
+            if userInitiated {
+                visibleRefreshes -= 1
+                isLoading = visibleRefreshes > 0
+            }
+        }
+        let startedAt = Date()
+
+        if let running = scanTask {
+            guard userInitiated else { return }
+            await running.value
+        }
+        if scanTask == nil {
+            scanTask = Task {
+                await performScan()
+                scanTask = nil
+            }
+        }
+        await scanTask?.value
 
         guard userInitiated else { return }
         let elapsed = Date().timeIntervalSince(startedAt)
@@ -241,70 +235,30 @@ final class PortsViewModel: ObservableObject {
         }
     }
 
-    /// Collapse raw entries into display rows, applying the active filter/search.
-    private func rebuild() {
-        // Group by a stable key so IPv4/IPv6 duplicates merge.
-        struct Key: Hashable {
-            let port: Int
-            let proto: NetProtocol
-            let command: String
-            let pid: Int32
-            let listening: Bool
+    private func performScan() async {
+        do {
+            let entries = try await Task.detached(priority: .userInitiated) {
+                try PortScanner.scan()
+            }.value
+            allEntries = entries
+            lastError = nil
+            lastUpdated = Date()
+            notifier.handle(entries: entries)
+        } catch {
+            lastError = error.localizedDescription
         }
-        var groups: [Key: [PortEntry]] = [:]
-        for e in visibleEntries {
-            switch filter {
-            case .exposed where !e.isListening: continue
-            case .connections where e.isListening: continue
-            default: break
-            }
-            let key = Key(port: e.port, proto: e.netProtocol,
-                         command: e.command, pid: e.pid, listening: e.isListening)
-            groups[key, default: []].append(e)
-        }
-
-        var built: [PortRow] = groups.map { key, members in
-            let hosts = orderedUnique(members.map(\.localHost))
-            let anyPublic = members.contains(where: \.isPublicBind)
-            let established = members.filter { $0.state == "ESTABLISHED" || $0.remote != nil }
-            return PortRow(
-                id: "\(key.pid)-\(key.proto.rawValue)-\(key.port)-\(key.listening)",
-                port: key.port,
-                netProtocol: key.proto,
-                command: key.command,
-                pid: key.pid,
-                user: members.first?.user ?? "",
-                isListening: key.listening,
-                isPublicBind: anyPublic,
-                hosts: hosts,
-                connectionCount: max(established.count, 1),
-                executablePath: members.first?.executablePath
-            )
-        }
-
-        let q = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        if !q.isEmpty {
-            built = built.filter { row in
-                row.command.lowercased().contains(q)
-                    || String(row.port).contains(q)
-                    || row.hostSummary.lowercased().contains(q)
-                    || String(row.pid).contains(q)
-            }
-        }
-
-        // Listening first, then by port ascending, then command.
-        built.sort {
-            if $0.isListening != $1.isListening { return $0.isListening && !$1.isListening }
-            if $0.port != $1.port { return $0.port < $1.port }
-            return $0.command.localizedCaseInsensitiveCompare($1.command) == .orderedAscending
-        }
-        rows = built
+        rebuild()
     }
 
-    private func orderedUnique(_ items: [String]) -> [String] {
-        var seen = Set<String>()
-        var out: [String] = []
-        for i in items where seen.insert(i).inserted { out.append(i) }
-        return out
+    /// Recompute everything derived from the latest scan and the active filters.
+    private func rebuild() {
+        let visible = showSystem ? allEntries : allEntries.filter { !$0.isSystem }
+        rows = PortRow.build(from: visible, filter: filter, search: searchText)
+
+        listeningCount = Set(visible.filter(\.isListening)
+            .map { "\($0.port)/\($0.netProtocol.rawValue)" }).count
+        hiddenSystemCount = showSystem ? 0 : PortRow.build(
+            from: allEntries.filter(\.isSystem), filter: filter
+        ).count
     }
 }
